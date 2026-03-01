@@ -82,4 +82,4 @@ define_unit(name="bad", dimension="nonexistent")
 
 ## Python API
 
-For programmatic unit definition without MCP, see [Custom Units & Graphs](../custom-units-and-graphs.md).
+For programmatic unit definition without MCP, see [Custom Units & Graphs](https://docs.ucon.dev/guides/custom-units-and-graphs/).

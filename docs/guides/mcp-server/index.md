@@ -5,7 +5,7 @@ ucon includes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP)
 ## Installation
 
 ```bash
-pip install ucon[mcp]
+pip install ucon-tools[mcp]
 ```
 
 !!! note "Python 3.10+"
@@ -24,7 +24,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "ucon": {
       "command": "uvx",
-      "args": ["--from", "ucon[mcp]", "ucon-mcp"]
+      "args": ["--from", "ucon-tools[mcp]", "ucon-mcp"]
     }
   }
 }
@@ -37,7 +37,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "ucon": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/ucon", "--extra", "mcp", "ucon-mcp"]
+      "args": ["run", "--directory", "/path/to/ucon-tools", "--extra", "mcp", "ucon-mcp"]
     }
   }
 }
