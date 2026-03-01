@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-02-28
 
+### Fixed
+
+- Documentation: Updated install instructions to `ucon-tools[mcp]`
+- Documentation: Updated import paths from `ucon.mcp` to `ucon.tools.mcp`
+
 ### Added
 
 - MCP server for AI agent integration (extracted from ucon v0.9.3)
