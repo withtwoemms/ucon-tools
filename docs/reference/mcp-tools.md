@@ -652,7 +652,7 @@ Formulas are registered in Python code using `@register_formula`:
 
 ```python
 from ucon import Number, Dimension, enforce_dimensions
-from ucon.mcp.formulas import register_formula
+from ucon.tools.mcp.formulas import register_formula
 
 @register_formula("bmi", description="Body Mass Index")
 @enforce_dimensions

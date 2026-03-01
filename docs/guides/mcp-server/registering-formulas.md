@@ -6,7 +6,7 @@ ucon's formula system lets you expose dimensionally-typed calculations to AI age
 
 ```python
 from ucon import Number, Dimension, enforce_dimensions
-from ucon.mcp.formulas import register_formula
+from ucon.tools.mcp.formulas import register_formula
 
 @register_formula("bmi", description="Body Mass Index")
 @enforce_dimensions
@@ -111,7 +111,7 @@ Formulas must be registered before the MCP server starts. Typical pattern:
 ```python
 # myapp/formulas.py
 from ucon import Number, Dimension, enforce_dimensions
-from ucon.mcp.formulas import register_formula
+from ucon.tools.mcp.formulas import register_formula
 
 @register_formula("my_formula", description="...")
 @enforce_dimensions
@@ -123,7 +123,7 @@ def my_formula(...) -> Number:
 # myapp/__init__.py or entry point
 import myapp.formulas  # Triggers registration
 
-from ucon.mcp.server import main
+from ucon.tools.mcp.server import main
 main()  # Start MCP server with formulas registered
 ```
 
@@ -159,7 +159,7 @@ Use `clear_formulas()` in tests to reset state:
 
 ```python
 import pytest
-from ucon.mcp.formulas import clear_formulas, register_formula, get_formula
+from ucon.tools.mcp.formulas import clear_formulas, register_formula, get_formula
 
 @pytest.fixture(autouse=True)
 def clean_registry():
