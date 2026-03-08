@@ -6,14 +6,14 @@
 import pytest
 
 from ucon import Dimension, Number, enforce_dimensions
-from ucon.mcp.formulas import (
+from ucon.tools.mcp.formulas import (
     FormulaInfo,
     register_formula,
     list_formulas,
     get_formula,
     clear_formulas,
 )
-from ucon.mcp.schema import extract_dimension_constraints
+from ucon.tools.mcp.schema import extract_dimension_constraints
 
 
 @pytest.fixture(autouse=True)
@@ -252,7 +252,7 @@ class TestCallFormula:
     """Tests for call_formula MCP tool."""
 
     def test_unknown_formula(self):
-        from ucon.mcp.server import call_formula, FormulaError
+        from ucon.tools.mcp.server import call_formula, FormulaError
 
         result = call_formula("nonexistent", {})
         assert isinstance(result, FormulaError)
@@ -260,7 +260,7 @@ class TestCallFormula:
         assert "nonexistent" in result.error
 
     def test_missing_parameter(self):
-        from ucon.mcp.server import call_formula, FormulaError
+        from ucon.tools.mcp.server import call_formula, FormulaError
 
         @register_formula("needs_params")
         @enforce_dimensions
@@ -273,7 +273,7 @@ class TestCallFormula:
         assert result.parameter == "x"
 
     def test_invalid_parameter_format(self):
-        from ucon.mcp.server import call_formula, FormulaError
+        from ucon.tools.mcp.server import call_formula, FormulaError
 
         @register_formula("simple")
         def simple(x: Number) -> Number:
@@ -285,7 +285,7 @@ class TestCallFormula:
         assert result.error_type == "invalid_parameter"
 
     def test_missing_value_key(self):
-        from ucon.mcp.server import call_formula, FormulaError
+        from ucon.tools.mcp.server import call_formula, FormulaError
 
         @register_formula("simple2")
         def simple2(x: Number) -> Number:
@@ -297,7 +297,7 @@ class TestCallFormula:
         assert "value" in result.error
 
     def test_unknown_unit(self):
-        from ucon.mcp.server import call_formula, FormulaError
+        from ucon.tools.mcp.server import call_formula, FormulaError
 
         @register_formula("with_unit")
         def with_unit(x: Number) -> Number:
@@ -309,7 +309,7 @@ class TestCallFormula:
         assert "foobar" in result.error
 
     def test_dimension_mismatch(self):
-        from ucon.mcp.server import call_formula, FormulaError
+        from ucon.tools.mcp.server import call_formula, FormulaError
 
         @register_formula("length_only")
         @enforce_dimensions
@@ -322,7 +322,7 @@ class TestCallFormula:
         assert result.error_type == "dimension_mismatch"
 
     def test_successful_call(self):
-        from ucon.mcp.server import call_formula, FormulaResult
+        from ucon.tools.mcp.server import call_formula, FormulaResult
 
         @register_formula("double_length")
         @enforce_dimensions
@@ -337,7 +337,7 @@ class TestCallFormula:
         assert result.dimension == "length"
 
     def test_dimensionless_parameter(self):
-        from ucon.mcp.server import call_formula, FormulaResult
+        from ucon.tools.mcp.server import call_formula, FormulaResult
 
         @register_formula("scale_it")
         def scale_it(x: Number, factor: Number) -> Number:
@@ -351,7 +351,7 @@ class TestCallFormula:
         assert result.quantity == 15.0
 
     def test_composite_unit_result(self):
-        from ucon.mcp.server import call_formula, FormulaResult
+        from ucon.tools.mcp.server import call_formula, FormulaResult
 
         @register_formula("velocity")
         @enforce_dimensions

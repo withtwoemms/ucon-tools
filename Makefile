@@ -32,11 +32,19 @@ help:
 	@echo "  ${CYAN}venv${RESET}          - Create virtual environment"
 	@echo "  ${CYAN}clean${RESET}         - Remove build artifacts and caches"
 	@echo ""
+	@echo "${YELLOW}Eval Commands:${RESET}\n"
+	@echo "  ${CYAN}eval-decompose-live${RESET}  - Run decompose eval against live MCP server"
+	@echo "  ${CYAN}eval-nl-problems${RESET}    - Run natural language problem eval (nursing, chemeng)"
+	@echo "  ${CYAN}eval-nl-analyze${RESET}     - Analyze NL problems (no server needed)"
+	@echo "  ${CYAN}eval-ollama${RESET}         - Run eval with Ollama model (requires: pip install ollama)"
+	@echo ""
 	@echo "${YELLOW}Variables:${RESET}\n"
 	@echo "  PYTHON=${PYTHON}		- Python version for test target"
 	@echo "  UV_VENV=${UV_VENV}	- Path to virtual environment"
 	@echo "  TESTNAME=		- Specific test to run (e.g., tests.ucon.test_core)"
 	@echo "  COVERAGE=${COVERAGE}		- Enable coverage (true/false)"
+	@echo "  SSE_URL=		- SSE server URL for eval-decompose-live"
+	@echo "  OLLAMA_MODEL=		- Ollama model for eval-ollama (default: qwen2.5:0.5b)"
 	@echo ""
 
 # --- uv Installation ---
@@ -134,3 +142,47 @@ clean:
 clean-all: clean
 	@echo "${YELLOW}Removing uv.lock...${RESET}"
 	@rm -f uv.lock
+
+# --- Evals ---
+.PHONY: eval-decompose-live
+eval-decompose-live: ${DEPS_INSTALLED}
+	@echo "${GREEN}Running decompose eval against live MCP server...${RESET}"
+ifdef SSE_URL
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_decompose_live.py --sse ${SSE_URL}
+else
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_decompose_live.py
+endif
+
+.PHONY: eval-nl-problems
+eval-nl-problems: ${DEPS_INSTALLED}
+	@echo "${GREEN}Running natural language problem eval...${RESET}"
+ifdef SSE_URL
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_natural_language_problems.py --sse ${SSE_URL}
+else
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_natural_language_problems.py
+endif
+
+.PHONY: eval-nl-analyze
+eval-nl-analyze: ${DEPS_INSTALLED}
+	@echo "${GREEN}Analyzing natural language problems...${RESET}"
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_natural_language_problems.py --analyze
+
+# Ollama model evaluation
+OLLAMA_MODEL ?= qwen2.5:0.5b
+
+.PHONY: eval-ollama
+eval-ollama: ${DEPS_INSTALLED}
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv pip install ollama -q
+	@echo "${GREEN}Running Ollama model eval (${OLLAMA_MODEL})...${RESET}"
+ifdef SSE_URL
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_ollama.py --model ${OLLAMA_MODEL} --sse ${SSE_URL}
+else
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} \
+		python scripts/eval_ollama.py --model ${OLLAMA_MODEL}
+endif

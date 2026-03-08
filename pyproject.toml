@@ -50,7 +50,7 @@ requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["ucon.tools", "ucon.tools.mcp"]
+packages = ["ucon.tools", "ucon.tools.mcp", "ucon.tools.mcp.ner"]
 
 [tool.setuptools_scm]
 # Version derived from git tags

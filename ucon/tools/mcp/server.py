@@ -299,6 +299,15 @@ class FormulaError(BaseModel):
     hints: list[str] = []
 
 
+class DecomposeResult(BaseModel):
+    """Result of decomposing a conversion query into a compute-ready factor chain."""
+
+    initial_value: float | None
+    initial_unit: str
+    target_unit: str
+    factors: list[dict]
+
+
 class ConstantInfo(BaseModel):
     """Information about a physical constant."""
 
@@ -618,10 +627,15 @@ def compute(
     factors: list[dict],
     custom_units: list[dict] | None = None,
     custom_edges: list[dict] | None = None,
+    expected_unit: str | None = None,
     ctx: Context | None = None,
 ) -> ComputeResult | ConversionError:
     """
     Perform multi-step factor-label calculations with dimensional tracking.
+
+    IMPORTANT: Always use this tool for unit calculations. Do not calculate
+    manually - the tool validates dimensional consistency and catches errors
+    that manual calculation would miss.
 
     This tool processes a chain of conversion factors, validating dimensional
     consistency at each step. It's designed for dosage calculations, stoichiometry,
@@ -645,22 +659,88 @@ def compute(
             Each dict should have: {"name": str, "dimension": str, "aliases": [str]}
         custom_edges: Optional list of inline conversion edges for this call only.
             Each dict should have: {"src": str, "dst": str, "factor": float}
+        expected_unit: Optional target unit for validation. If provided, compute
+            will verify the result has the correct dimension and return diagnostic
+            feedback if not. This enables convergence loops where a model can
+            iterate on the factor chain until dimensions match.
 
     Returns:
         ComputeResult with final quantity, unit, dimension, and step-by-step trace.
-        ConversionError with step localization if any factor fails.
+        ConversionError with step localization if any factor fails, or with
+        dimension mismatch diagnostics if expected_unit doesn't match.
 
-    Example:
-        # Convert 154 lb to mg/dose for a drug with 15 mg/kg/day dosing, 3 doses/day
+    Examples:
+        Example 1: Weight-based dosing
+        Problem: "15 mg/kg/day for a 70 kg patient, divided into 3 doses. mg per dose?"
+        - Start with the rate: 15 mg/(kg*day)
+        - Multiply by patient weight: 70 kg
+        - Divide by doses per day: 3 doses
+
         compute(
-            initial_value=154,
-            initial_unit="lb",
+            initial_value=15,
+            initial_unit="mg/(kg*day)",
             factors=[
-                {"value": 1, "numerator": "kg", "denominator": "2.205 lb"},
-                {"value": 15, "numerator": "mg", "denominator": "kg*day"},
-                {"value": 1, "numerator": "day", "denominator": "3 dose"},
-            ]
+                {"value": 70, "numerator": "kg", "denominator": "ea"},
+                {"value": 1, "numerator": "day", "denominator": "3 ea"},
+            ],
+            expected_unit="mg"
         )
+        # Result: 350 mg per dose
+
+        Example 2: IV drip rate
+        Problem: "1000 mL over 8 hours with 15 gtt/mL tubing. Drip rate in gtt/min?"
+        - Start with volume: 1000 mL
+        - Divide by time: 8 hours
+        - Convert hours to minutes
+        - Multiply by drip factor: 15 gtt/mL
+
+        compute(
+            initial_value=1000,
+            initial_unit="mL",
+            factors=[
+                {"value": 1, "numerator": "ea", "denominator": "8 h"},
+                {"value": 60, "numerator": "min", "denominator": "h"},
+                {"value": 15, "numerator": "gtt", "denominator": "mL"},
+            ],
+            expected_unit="gtt/min"
+        )
+        # Result: 31.25 gtt/min
+
+        Example 3: Concentration-based infusion
+        Problem: "Dopamine 5 mcg/kg/min for 80 kg patient. Drug is 400 mg in 250 mL. mL/h?"
+        - Start with rate: 5 mcg/(kg*min)
+        - Multiply by weight: 80 kg
+        - Convert time: min to h
+        - Convert mass: mcg to mg
+        - Apply concentration: 250 mL per 400 mg
+
+        compute(
+            initial_value=5,
+            initial_unit="mcg/(kg*min)",
+            factors=[
+                {"value": 80, "numerator": "kg", "denominator": "ea"},
+                {"value": 60, "numerator": "min", "denominator": "h"},
+                {"value": 1, "numerator": "mg", "denominator": "1000 mcg"},
+                {"value": 250, "numerator": "mL", "denominator": "400 mg"},
+            ],
+            expected_unit="mL/h"
+        )
+        # Result: 15 mL/h
+
+        Example 4: Using expected_unit for validation
+        If your factor chain produces the wrong dimension, compute returns
+        diagnostic hints:
+
+        compute(
+            initial_value=5,
+            initial_unit="mcg/(kg*min)",
+            factors=[
+                {"value": 80, "numerator": "kg", "denominator": "min"},  # Wrong!
+            ],
+            expected_unit="mg/h"
+        )
+        # Returns error with hints:
+        # "Missing 'time' in result. Try adding 'time' to a numerator..."
     """
     session = _get_session(ctx)
     session_graph = session.get_graph()
@@ -797,6 +877,28 @@ def compute(
         final_dim = running_unit.dimension.name if running_unit else "none"
         final_unit_str = _format_unit_output(running_unit)
 
+        # Validate against expected_unit if provided
+        if expected_unit is not None:
+            expected_parsed, err = resolve_unit(expected_unit, parameter="expected_unit")
+            if err:
+                return err
+
+            expected_dim = expected_parsed.dimension.name
+            if final_dim != expected_dim:
+                # Build diagnostic feedback
+                hints = _diagnose_dimension_mismatch(
+                    got_dim=running_unit.dimension if running_unit else None,
+                    expected_dim=expected_parsed.dimension,
+                )
+                return ConversionError(
+                    error=f"Dimension mismatch: got '{final_dim}', expected '{expected_dim}'",
+                    error_type="dimension_mismatch",
+                    parameter="factors",
+                    got=final_dim,
+                    expected=expected_dim,
+                    hints=hints,
+                )
+
         return ComputeResult(
             quantity=running_value,
             unit=final_unit_str,
@@ -815,6 +917,86 @@ def _format_unit_output(unit) -> str:
         return unit.shorthand or "1"
     else:
         return str(unit)
+
+
+def _diagnose_dimension_mismatch(
+    got_dim: 'Dimension | None',
+    expected_dim: 'Dimension',
+) -> list[str]:
+    """Generate diagnostic hints for dimension mismatch.
+
+    Analyzes the difference between got and expected dimensions to provide
+    actionable feedback for factor chain correction.
+
+    Args:
+        got_dim: The dimension that resulted from the factor chain.
+        expected_dim: The dimension that was expected.
+
+    Returns:
+        List of diagnostic hints.
+    """
+    hints = []
+
+    if got_dim is None:
+        hints.append("Result is dimensionless. You may need additional factors.")
+        hints.append(f"Expected dimension: {expected_dim.name}")
+        return hints
+
+    # Get base expansions for detailed comparison
+    try:
+        got_bases = {d.name: float(exp) for d, exp in got_dim.base_expansion().items()}
+        expected_bases = {d.name: float(exp) for d, exp in expected_dim.base_expansion().items()}
+    except Exception:
+        # Fallback if base_expansion not available
+        hints.append(
+            f"Got '{got_dim.name}' but expected '{expected_dim.name}'. "
+            f"Review factor chain for correctness."
+        )
+        return hints
+
+    # Find differences in dimension exponents
+    all_bases = set(got_bases.keys()) | set(expected_bases.keys())
+
+    for base in sorted(all_bases):
+        got_exp = got_bases.get(base, 0)
+        expected_exp = expected_bases.get(base, 0)
+        diff = got_exp - expected_exp
+
+        if diff == 0:
+            continue
+
+        if diff > 0:
+            # Extra dimension in result
+            if diff == 1:
+                hints.append(
+                    f"Extra '{base}' in result. "
+                    f"Try adding '{base}' to a denominator, or remove a factor with '{base}' in numerator."
+                )
+            else:
+                hints.append(
+                    f"Extra '{base}^{int(diff)}' in result. "
+                    f"Check factors involving '{base}' — may need to invert or remove some."
+                )
+        else:
+            # Missing dimension in result
+            if diff == -1:
+                hints.append(
+                    f"Missing '{base}' in result. "
+                    f"Try adding '{base}' to a numerator, or remove a factor with '{base}' in denominator."
+                )
+            else:
+                hints.append(
+                    f"Missing '{base}^{int(-diff)}' in result. "
+                    f"Check factors involving '{base}' — may need to add or invert some."
+                )
+
+    if not hints:
+        hints.append(
+            f"Got '{got_dim.name}' but expected '{expected_dim.name}'. "
+            f"Review factor chain for correctness."
+        )
+
+    return hints
 
 
 def _accumulate_factors(
@@ -1218,6 +1400,773 @@ def reset_session(ctx: Context | None = None) -> SessionResult:
 
 
 # -----------------------------------------------------------------------------
+# Decompose Tool
+# -----------------------------------------------------------------------------
+
+
+def _find_conversion_path(
+    graph: ConversionGraph,
+    src: Unit,
+    dst: Unit,
+) -> list[tuple[Unit, Unit, float]] | None:
+    """Find the BFS path between two units and return edge info.
+
+    Returns a list of (from_unit, to_unit, factor) tuples representing the path.
+    Returns None if no path exists.
+    """
+    from collections import deque
+
+    if src == dst:
+        return []  # Identity conversion
+
+    dim = src.dimension
+    if dim != dst.dimension:
+        return None
+
+    if dim not in graph._unit_edges:
+        return None
+
+    # BFS tracking both the composed map and the path
+    # visited: unit → (predecessor_unit, edge_factor) or None for start
+    visited: dict[Unit, tuple[Unit | None, float]] = {src: (None, 1.0)}
+    queue = deque([src])
+
+    while queue:
+        current = queue.popleft()
+
+        if current not in graph._unit_edges[dim]:
+            continue
+
+        for neighbor, edge_map in graph._unit_edges[dim][current].items():
+            if neighbor in visited:
+                continue
+
+            # Extract factor from the map
+            # LinearMap has .a attribute, AffineMap has .a and .b
+            if hasattr(edge_map, 'a'):
+                factor = float(edge_map.a)
+            else:
+                factor = 1.0  # Identity or unknown map type
+
+            visited[neighbor] = (current, factor)
+
+            if neighbor == dst:
+                # Reconstruct path
+                path = []
+                node = dst
+                while visited[node][0] is not None:
+                    predecessor, edge_factor = visited[node]
+                    path.append((predecessor, node, edge_factor))
+                    node = predecessor
+                path.reverse()
+                return path
+
+            queue.append(neighbor)
+
+    return None  # No path found
+
+
+def _format_unit_for_chain(unit: Unit | UnitProduct) -> str:
+    """Format a unit for use in a factor chain."""
+    if isinstance(unit, Unit):
+        return unit.shorthand or unit.name
+    elif isinstance(unit, UnitProduct):
+        return unit.shorthand or str(unit)
+    return str(unit)
+
+
+def _get_dimension_exponents(dim: Dimension) -> dict[str, float]:
+    """Get base dimension exponents as a dict."""
+    try:
+        return {d.name: float(exp) for d, exp in dim.base_expansion().items()}
+    except Exception:
+        return {dim.name: 1.0}
+
+
+def _compute_dimension_gap(
+    initial_dim: Dimension,
+    target_dim: Dimension,
+) -> dict[str, float]:
+    """Compute the dimensional gap: what exponents are needed to go from initial to target.
+
+    Returns a dict of {base_dimension: exponent_needed}.
+    Positive exponent means we need to multiply by that dimension.
+    Negative exponent means we need to divide by that dimension.
+    """
+    initial_exp = _get_dimension_exponents(initial_dim)
+    target_exp = _get_dimension_exponents(target_dim)
+
+    all_bases = set(initial_exp.keys()) | set(target_exp.keys())
+    gap = {}
+
+    for base in all_bases:
+        init = initial_exp.get(base, 0.0)
+        targ = target_exp.get(base, 0.0)
+        diff = targ - init
+        if abs(diff) > 1e-12:
+            gap[base] = diff
+
+    return gap
+
+
+def _find_unit_for_dimension(
+    graph: ConversionGraph,
+    dim_name: str,
+    preferred_unit_str: str | None = None,
+) -> Unit | None:
+    """Find a unit for a given dimension name.
+
+    If preferred_unit_str is given, try to resolve it first.
+    Otherwise, find any unit in that dimension.
+    """
+    from ucon.dimension import all_dimensions
+
+    # If preferred unit given, try to resolve it
+    if preferred_unit_str:
+        result = graph.resolve_unit(preferred_unit_str)
+        if result:
+            unit, _ = result
+            return unit
+
+    # Find the dimension
+    target_dim = None
+    for d in all_dimensions():
+        if d.name == dim_name:
+            target_dim = d
+            break
+
+    if target_dim is None:
+        return None
+
+    # Find any unit in that dimension from the graph
+    if target_dim in graph._unit_edges:
+        units = list(graph._unit_edges[target_dim].keys())
+        if units:
+            return units[0]
+
+    return None
+
+
+def _build_scale_conversion_factor(
+    graph: ConversionGraph,
+    src_unit: Unit | UnitProduct,
+    dst_unit: Unit | UnitProduct,
+) -> dict | None:
+    """Build a conversion factor between units of the same dimension but different scales.
+
+    Returns a factor dict for compute(), or None if no conversion needed/possible.
+    """
+    # Get the conversion factor
+    try:
+        with using_graph(graph):
+            conv_map = graph.convert(src=src_unit, dst=dst_unit)
+
+        if hasattr(conv_map, 'a'):
+            factor = float(conv_map.a)
+        else:
+            factor = 1.0
+
+        if abs(factor - 1.0) < 1e-12:
+            return None  # Identity, no factor needed
+
+        src_str = _format_unit_for_chain(src_unit)
+        dst_str = _format_unit_for_chain(dst_unit)
+
+        return {
+            "value": factor,
+            "numerator": dst_str,
+            "denominator": src_str,
+        }
+    except Exception:
+        return None
+
+
+@mcp.tool()
+def decompose(
+    query: str | None = None,
+    initial_unit: str | None = None,
+    target_unit: str | None = None,
+    known_quantities: list[dict] | None = None,
+    ctx: Context | None = None,
+) -> DecomposeResult | ConversionError:
+    """
+    Build a factor chain for compute() by analyzing dimensional requirements.
+
+    This tool bridges the gap between natural language problems and compute().
+    It handles dimensional gap analysis, places known quantities correctly,
+    and constructs the complete factor chain.
+
+    TWO MODES OF OPERATION:
+
+    Mode 1 - Query string (simple conversions):
+        decompose(query="500 mL to L")
+        For direct unit-to-unit conversions where dimensions already match.
+
+    Mode 2 - Structured input (complex problems):
+        decompose(
+            initial_unit="mcg/(kg*min)",
+            target_unit="mg/h",
+            known_quantities=[{"value": 70, "unit": "kg"}]
+        )
+        For multi-step problems where known quantities bridge dimensional gaps.
+
+    Args:
+        query: Simple conversion query like "500 mL to L" or "50 psi to kPa".
+            Use this for direct conversions where source and target have the
+            same dimension.
+
+        initial_unit: Starting unit string (e.g., "mcg/(kg*min)").
+            Use with target_unit for complex problems.
+
+        target_unit: Target unit string (e.g., "mg/h").
+            The tool will analyze what's needed to bridge the dimensional gap.
+
+        known_quantities: List of quantities that should be incorporated into
+            the factor chain. Each dict should have:
+            - value: Numeric value (e.g., 70)
+            - unit: Unit string (e.g., "kg")
+            The tool will determine whether each quantity goes in a numerator
+            or denominator based on dimensional analysis.
+
+    Returns:
+        DecomposeResult with initial_value, initial_unit, target_unit, factors.
+        The factors list can be passed directly to compute().
+        ConversionError if the dimensional gap cannot be bridged.
+
+    Examples:
+        Example 1: Simple conversion (query mode)
+        decompose(query="500 mL to L")
+        # Returns factors for mL→L conversion
+
+        Example 2: Weight-based dosing
+        Problem: "5 mcg/kg/min for a 70 kg patient. Rate in mg/h?"
+        decompose(
+            initial_unit="mcg/(kg*min)",
+            target_unit="mg/h",
+            known_quantities=[{"value": 70, "unit": "kg"}]
+        )
+        # Returns:
+        # {
+        #   "initial_value": 1,
+        #   "initial_unit": "mcg/(kg*min)",
+        #   "target_unit": "mg/h",
+        #   "factors": [
+        #     {"value": 70, "numerator": "kg", "denominator": "ea"},
+        #     {"value": 60, "numerator": "min", "denominator": "h"},
+        #     {"value": 1, "numerator": "mg", "denominator": "1000 mcg"}
+        #   ]
+        # }
+        # Then: compute(initial_value=5, initial_unit="mcg/(kg*min)", factors=...)
+
+        Example 3: IV drip rate
+        Problem: "1000 mL over 8 hours, 15 gtt/mL tubing. Rate in gtt/min?"
+        decompose(
+            initial_unit="mL",
+            target_unit="gtt/min",
+            known_quantities=[
+                {"value": 8, "unit": "h"},
+                {"value": 15, "unit": "gtt/mL"}
+            ]
+        )
+
+        Example 4: Concentration problem
+        Problem: "Drug is 400 mg in 250 mL. Dose in mg, volume needed?"
+        decompose(
+            initial_unit="mg",
+            target_unit="mL",
+            known_quantities=[
+                {"value": 250, "unit": "mL"},
+                {"value": 400, "unit": "mg"}
+            ]
+        )
+        # Places 250 mL in numerator, 400 mg in denominator (to cancel mg → mL)
+    """
+    from ucon.parsing import parse
+
+    session = _get_session(ctx)
+    graph = session.get_graph()
+
+    # Determine mode based on parameters
+    if query is not None:
+        # Mode 1: Simple query string parsing
+        return _decompose_query_mode(query, graph)
+    elif initial_unit is not None and target_unit is not None:
+        # Mode 2: Structured dimensional analysis
+        return _decompose_structured_mode(
+            initial_unit, target_unit, known_quantities or [], graph
+        )
+    else:
+        return ConversionError(
+            error="Must provide either 'query' or both 'initial_unit' and 'target_unit'",
+            error_type="invalid_input",
+            parameter="query",
+            hints=[
+                "For simple conversions: decompose(query='500 mL to L')",
+                "For complex problems: decompose(initial_unit='mcg/(kg*min)', target_unit='mg/h', known_quantities=[...])",
+            ],
+        )
+
+
+def _decompose_query_mode(
+    query: str,
+    graph: ConversionGraph,
+) -> DecomposeResult | ConversionError:
+    """Handle simple 'X to Y' query parsing."""
+    from ucon.parsing import parse
+
+    # Split on conversion separators
+    query_stripped = query.strip()
+    parts = None
+
+    for sep_pattern in [r'\s+to\s+', r'\s+→\s+', r'\s+->\s+', r'\s+in\s+']:
+        split_result = re.split(sep_pattern, query_stripped, maxsplit=1)
+        if len(split_result) == 2:
+            parts = split_result
+            break
+
+    if parts is None or len(parts) != 2:
+        return ConversionError(
+            error=f"Cannot parse conversion query: '{query}'",
+            error_type="parse_error",
+            parameter="query",
+            hints=[
+                "Expected format: '<value> <unit> to <unit>' or '<unit> to <unit>'",
+                "Examples: '3 TB to GiB', '60 mph to km/h', 'm/s to ft/s'",
+            ],
+        )
+
+    source_str, target_str = parts[0].strip(), parts[1].strip()
+
+    with using_graph(graph):
+        initial_value = None
+        initial_unit_str = source_str
+
+        try:
+            source_parsed = parse(source_str)
+            initial_value = source_parsed.quantity
+            if source_parsed.unit is not None:
+                initial_unit_str = _format_unit_for_chain(source_parsed.unit)
+                source_unit = source_parsed.unit
+            else:
+                return ConversionError(
+                    error=f"Source '{source_str}' has no unit",
+                    error_type="parse_error",
+                    parameter="query",
+                    hints=["Source must include a unit, e.g., '3 TB' not just '3'"],
+                )
+        except Exception:
+            src_result, err = resolve_unit(source_str, parameter="query")
+            if err:
+                return err
+            source_unit = src_result
+            initial_unit_str = source_str
+            initial_value = None
+
+        dst_result, err = resolve_unit(target_str, parameter="query")
+        if err:
+            return err
+        target_unit = dst_result
+
+    src_dim = source_unit.dimension
+    dst_dim = target_unit.dimension
+
+    if src_dim != dst_dim:
+        return build_dimension_mismatch_error(
+            from_unit_str=initial_unit_str,
+            to_unit_str=target_str,
+            src_unit=source_unit,
+            dst_unit=target_unit,
+        )
+
+    # Build factor chain
+    factors = []
+
+    if isinstance(source_unit, UnitProduct) or isinstance(target_unit, UnitProduct):
+        try:
+            with using_graph(graph):
+                conv_map = graph.convert(src=source_unit, dst=target_unit)
+
+            if hasattr(conv_map, 'a'):
+                total_factor = float(conv_map.a)
+            else:
+                total_factor = 1.0
+
+            if abs(total_factor - 1.0) > 1e-12:
+                factors.append({
+                    "value": total_factor,
+                    "numerator": _format_unit_for_chain(target_unit),
+                    "denominator": _format_unit_for_chain(source_unit),
+                })
+
+        except (DimensionMismatch, ConversionNotFound) as e:
+            return build_no_path_error(
+                from_unit_str=initial_unit_str,
+                to_unit_str=target_str,
+                src_unit=source_unit,
+                dst_unit=target_unit,
+                exception=e,
+            )
+    else:
+        path = _find_conversion_path(graph, source_unit, target_unit)
+
+        if path is None:
+            try:
+                with using_graph(graph):
+                    graph.convert(src=source_unit, dst=target_unit)
+            except ConversionNotFound as e:
+                return build_no_path_error(
+                    from_unit_str=initial_unit_str,
+                    to_unit_str=target_str,
+                    src_unit=source_unit,
+                    dst_unit=target_unit,
+                    exception=e,
+                )
+            except DimensionMismatch:
+                return build_dimension_mismatch_error(
+                    from_unit_str=initial_unit_str,
+                    to_unit_str=target_str,
+                    src_unit=source_unit,
+                    dst_unit=target_unit,
+                )
+
+        for from_unit, to_unit, factor in path:
+            factors.append({
+                "value": factor,
+                "numerator": _format_unit_for_chain(to_unit),
+                "denominator": _format_unit_for_chain(from_unit),
+            })
+
+    return DecomposeResult(
+        initial_value=initial_value,
+        initial_unit=initial_unit_str,
+        target_unit=target_str,
+        factors=factors,
+    )
+
+
+def _decompose_structured_mode(
+    initial_unit_str: str,
+    target_unit_str: str,
+    known_quantities: list[dict],
+    graph: ConversionGraph,
+) -> DecomposeResult | ConversionError:
+    """Handle structured dimensional analysis mode.
+
+    This mode:
+    1. Parses initial and target units
+    2. Computes the dimensional gap
+    3. Places known quantities to bridge the gap
+    4. Adds conversion factors for remaining unit mismatches
+    """
+    with using_graph(graph):
+        # Parse initial unit
+        initial_parsed, err = resolve_unit(initial_unit_str, parameter="initial_unit")
+        if err:
+            return err
+
+        # Parse target unit
+        target_parsed, err = resolve_unit(target_unit_str, parameter="target_unit")
+        if err:
+            return err
+
+    initial_dim = initial_parsed.dimension
+    target_dim = target_parsed.dimension
+
+    # Compute dimensional gap
+    gap = _compute_dimension_gap(initial_dim, target_dim)
+
+    factors = []
+    remaining_gap = dict(gap)
+
+    # Parse and place known quantities
+    for i, qty in enumerate(known_quantities):
+        if "value" not in qty:
+            return ConversionError(
+                error=f"known_quantities[{i}] missing 'value' field",
+                error_type="invalid_input",
+                parameter=f"known_quantities[{i}]",
+                hints=["Each quantity needs: {\"value\": 70, \"unit\": \"kg\"}"],
+            )
+
+        value = qty["value"]
+        unit_str = qty.get("unit", "ea")
+
+        with using_graph(graph):
+            qty_unit, err = resolve_unit(unit_str, parameter=f"known_quantities[{i}].unit")
+            if err:
+                return err
+
+        qty_dim = qty_unit.dimension
+        qty_exp = _get_dimension_exponents(qty_dim)
+
+        # Determine placement: does this quantity help close the gap?
+        # Check if adding it (numerator) or dividing by it (denominator) helps
+        placement = _determine_quantity_placement(qty_exp, remaining_gap)
+
+        if placement == "numerator":
+            # Quantity goes in numerator: multiply by it
+            factors.append({
+                "value": value,
+                "numerator": unit_str,
+                "denominator": "ea",
+            })
+            # Update remaining gap (adding this dimension)
+            for base, exp in qty_exp.items():
+                remaining_gap[base] = remaining_gap.get(base, 0) - exp
+                if abs(remaining_gap[base]) < 1e-12:
+                    del remaining_gap[base]
+
+        elif placement == "denominator":
+            # Quantity goes in denominator: divide by it
+            factors.append({
+                "value": 1,
+                "numerator": "ea",
+                "denominator": f"{value} {unit_str}",
+            })
+            # Update remaining gap (subtracting this dimension)
+            for base, exp in qty_exp.items():
+                remaining_gap[base] = remaining_gap.get(base, 0) + exp
+                if abs(remaining_gap[base]) < 1e-12:
+                    del remaining_gap[base]
+
+        else:
+            # Quantity doesn't help with dimensional gap - still include it
+            # but warn that it may not be correctly placed
+            factors.append({
+                "value": value,
+                "numerator": unit_str,
+                "denominator": "ea",
+            })
+
+    # After placing known quantities, check if we need unit conversions
+    # for same-dimension different-unit cases
+    # This handles cases like mcg→mg, min→h within the factor chain
+
+    # Build the current accumulated unit product
+    accum: dict[tuple, tuple] = {}
+    _accumulate_factors(accum, initial_parsed, +1.0)
+
+    for factor in factors:
+        num_str = factor["numerator"]
+        denom_str = factor["denominator"]
+
+        # Parse numerator
+        if num_str != "ea":
+            with using_graph(graph):
+                num_unit, _ = resolve_unit(num_str, parameter="numerator")
+                if num_unit:
+                    _accumulate_factors(accum, num_unit, +1.0)
+
+        # Parse denominator (may have value prefix)
+        if denom_str != "ea":
+            denom_parts = denom_str.strip().split(None, 1)
+            if len(denom_parts) == 2 and denom_parts[0].replace('.', '').isdigit():
+                denom_unit_str = denom_parts[1]
+            else:
+                denom_unit_str = denom_str
+
+            with using_graph(graph):
+                denom_unit, _ = resolve_unit(denom_unit_str, parameter="denominator")
+                if denom_unit:
+                    _accumulate_factors(accum, denom_unit, -1.0)
+
+    current_product = _build_product_from_accum(accum)
+    current_dim = current_product.dimension if current_product else Dimension.dimensionless
+
+    # Add conversion factors to reach target dimension's units
+    if current_dim == target_dim:
+        # Same dimension - may need scale conversions
+        conv_factor = _build_scale_conversion_factor(graph, current_product, target_parsed)
+        if conv_factor:
+            factors.append(conv_factor)
+    elif remaining_gap:
+        # Still have dimensional gap - provide diagnostic
+        hints = []
+        for base, exp in remaining_gap.items():
+            if exp > 0:
+                hints.append(f"Need to add '{base}' (exponent {exp}) - provide a quantity with this dimension")
+            else:
+                hints.append(f"Need to cancel '{base}' (exponent {-exp}) - provide a quantity with this dimension")
+
+        return ConversionError(
+            error=f"Cannot bridge dimensional gap from '{initial_unit_str}' to '{target_unit_str}'",
+            error_type="dimension_mismatch",
+            parameter="known_quantities",
+            hints=hints + [
+                "Add more known_quantities to bridge the gap",
+                f"Current gap: {remaining_gap}",
+            ],
+        )
+
+    return DecomposeResult(
+        initial_value=None,  # Value comes from the problem, not decompose
+        initial_unit=initial_unit_str,
+        target_unit=target_unit_str,
+        factors=factors,
+    )
+
+
+def _determine_quantity_placement(
+    qty_exp: dict[str, float],
+    gap: dict[str, float],
+) -> str:
+    """Determine whether a quantity should go in numerator or denominator.
+
+    Returns "numerator", "denominator", or "unknown".
+    """
+    if not qty_exp:
+        return "unknown"
+
+    # Check if adding this quantity (numerator) helps close the gap
+    numerator_score = 0
+    denominator_score = 0
+
+    for base, exp in qty_exp.items():
+        gap_exp = gap.get(base, 0)
+
+        if gap_exp > 0 and exp > 0:
+            # Gap needs positive, quantity provides positive → numerator
+            numerator_score += min(abs(gap_exp), abs(exp))
+        elif gap_exp < 0 and exp > 0:
+            # Gap needs negative, quantity provides positive → denominator
+            denominator_score += min(abs(gap_exp), abs(exp))
+        elif gap_exp > 0 and exp < 0:
+            # Gap needs positive, quantity provides negative → denominator
+            denominator_score += min(abs(gap_exp), abs(exp))
+        elif gap_exp < 0 and exp < 0:
+            # Gap needs negative, quantity provides negative → numerator
+            numerator_score += min(abs(gap_exp), abs(exp))
+
+    if numerator_score > denominator_score:
+        return "numerator"
+    elif denominator_score > numerator_score:
+        return "denominator"
+    else:
+        return "unknown"
+
+
+# -----------------------------------------------------------------------------
+# Solve Tool (NLP extraction + decompose + compute in one call)
+# -----------------------------------------------------------------------------
+
+
+class SolveResult(BaseModel):
+    """Result of solving a unit conversion problem from natural language."""
+
+    quantity: float
+    unit: str
+    dimension: str
+    extracted: dict  # What was extracted from the text
+    factors: list[dict]  # The factor chain used
+
+
+@mcp.tool()
+def solve(
+    problem: str,
+    target_unit: str,
+    ctx: Context | None = None,
+) -> SolveResult | ConversionError:
+    """
+    Solve a unit conversion problem from natural language in one step.
+
+    This tool extracts quantities from the problem text using NLP,
+    builds the factor chain, and computes the result. No need to
+    manually construct factors.
+
+    Args:
+        problem: Natural language problem statement.
+            Examples:
+            - "5 mcg/kg/min for a 70 kg patient"
+            - "1000 mL over 8 hours using 15 gtt/mL tubing"
+            - "25 mg/kg/day divided into 3 doses, child weighs 15 kg"
+        target_unit: The unit for the answer (e.g., "mg/h", "gtt/min", "mg").
+
+    Returns:
+        SolveResult with the computed quantity, unit, and extraction details.
+        ConversionError if extraction fails or units are incompatible.
+
+    Examples:
+        solve(
+            problem="5 mcg/kg/min for a 70 kg patient",
+            target_unit="mg/h"
+        )
+        # Returns: quantity=21.0, unit="mg/h"
+
+        solve(
+            problem="1000 mL over 8 hours using 15 gtt/mL tubing",
+            target_unit="gtt/min"
+        )
+        # Returns: quantity=31.25, unit="gtt/min"
+
+        solve(
+            problem="Convert 500 mL to liters",
+            target_unit="L"
+        )
+        # Returns: quantity=0.5, unit="L"
+    """
+    from ucon.tools.mcp.extraction import extract_problem
+    from ucon.tools.mcp.ner import normalize_unit_string
+
+    session = _get_session(ctx)
+    graph = session.get_graph()
+
+    # Normalize target_unit from natural language to canonical form
+    # e.g., "mg per dose" → "mg/ea", "milligrams per hour" → "mg/h"
+    target_unit = normalize_unit_string(target_unit)
+
+    # Step 1: Extract quantities from problem text
+    extraction = extract_problem(problem, target_unit)
+
+    if extraction.initial_unit is None:
+        return ConversionError(
+            error="Could not extract any quantities from the problem",
+            error_type="extraction_error",
+            parameter="problem",
+            hints=[
+                "Make sure the problem contains numeric values with units",
+                "Example: '5 mcg/kg/min for a 70 kg patient'",
+            ],
+        )
+
+    # Step 2: Call decompose with extracted values
+    decompose_result = _decompose_structured_mode(
+        initial_unit_str=extraction.initial_unit,
+        target_unit_str=target_unit,
+        known_quantities=extraction.known_quantities,
+        graph=graph,
+    )
+
+    if isinstance(decompose_result, ConversionError):
+        return decompose_result
+
+    # Step 3: Call compute with the factors
+    initial_value = extraction.initial_value or 1.0
+
+    compute_result = compute(
+        initial_value=initial_value,
+        initial_unit=decompose_result.initial_unit,
+        factors=decompose_result.factors,
+        expected_unit=target_unit,
+        ctx=ctx,
+    )
+
+    if isinstance(compute_result, ConversionError):
+        return compute_result
+
+    return SolveResult(
+        quantity=compute_result.quantity,
+        unit=compute_result.unit,
+        dimension=compute_result.dimension,
+        extracted={
+            "initial_value": extraction.initial_value,
+            "initial_unit": extraction.initial_unit,
+            "known_quantities": extraction.known_quantities,
+        },
+        factors=decompose_result.factors,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Formula Discovery Tools
 # -----------------------------------------------------------------------------
 
@@ -1446,8 +2395,45 @@ def call_formula(
 
 
 def main():
-    """Run the ucon MCP server."""
-    mcp.run()
+    """Run the ucon MCP server.
+
+    Usage:
+        ucon-mcp              # stdio mode (default)
+        ucon-mcp --sse        # SSE mode on port 8000
+        ucon-mcp --sse --port 3000  # SSE mode on custom port
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="ucon MCP server for unit conversion and dimensional analysis"
+    )
+    parser.add_argument(
+        "--sse",
+        action="store_true",
+        help="Run in SSE (Server-Sent Events) mode instead of stdio",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for SSE mode (default: 8000)",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host for SSE mode (default: 127.0.0.1)",
+    )
+    args = parser.parse_args()
+
+    if args.sse:
+        # Configure SSE settings
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        print(f"Starting ucon MCP server in SSE mode on http://{args.host}:{args.port}/sse")
+        mcp.run(transport="sse")
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

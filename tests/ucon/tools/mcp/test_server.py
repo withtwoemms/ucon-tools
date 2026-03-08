@@ -22,7 +22,7 @@ class TestConvertTool(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import convert, ConversionResult
+            from ucon.tools.mcp.server import convert, ConversionResult
             cls.convert = staticmethod(convert)
             cls.ConversionResult = ConversionResult
             cls.skip_tests = False
@@ -78,8 +78,8 @@ class TestConvertToolErrors(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import convert
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import convert
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.convert = staticmethod(convert)
             cls.ConversionError = ConversionError
             cls.skip_tests = False
@@ -117,7 +117,7 @@ class TestListUnitsTool(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import list_units, UnitInfo
+            from ucon.tools.mcp.server import list_units, UnitInfo
             cls.list_units = staticmethod(list_units)
             cls.UnitInfo = UnitInfo
             cls.skip_tests = False
@@ -186,7 +186,7 @@ class TestListScalesTool(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import list_scales, ScaleInfo
+            from ucon.tools.mcp.server import list_scales, ScaleInfo
             cls.list_scales = staticmethod(list_scales)
             cls.ScaleInfo = ScaleInfo
             cls.skip_tests = False
@@ -263,7 +263,7 @@ class TestCheckDimensionsTool(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import check_dimensions, DimensionCheck
+            from ucon.tools.mcp.server import check_dimensions, DimensionCheck
             cls.check_dimensions = staticmethod(check_dimensions)
             cls.DimensionCheck = DimensionCheck
             cls.skip_tests = False
@@ -310,7 +310,7 @@ class TestListDimensionsTool(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import list_dimensions
+            from ucon.tools.mcp.server import list_dimensions
             cls.list_dimensions = staticmethod(list_dimensions)
             cls.skip_tests = False
         except ImportError:
@@ -358,8 +358,8 @@ class TestConvertToolSuggestions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import convert
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import convert
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.convert = staticmethod(convert)
             cls.ConversionError = ConversionError
             cls.skip_tests = False
@@ -465,8 +465,8 @@ class TestCheckDimensionsErrors(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import check_dimensions
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import check_dimensions
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.check_dimensions = staticmethod(check_dimensions)
             cls.ConversionError = ConversionError
             cls.skip_tests = False
@@ -496,8 +496,8 @@ class TestListUnitsErrors(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import list_units
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import list_units
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.list_units = staticmethod(list_units)
             cls.ConversionError = ConversionError
             cls.skip_tests = False
@@ -526,8 +526,8 @@ class TestParseErrorHandling(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import convert, check_dimensions
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import convert, check_dimensions
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.convert = staticmethod(convert)
             cls.check_dimensions = staticmethod(check_dimensions)
             cls.ConversionError = ConversionError
@@ -581,10 +581,10 @@ class TestCountDimensionMCP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import (
+            from ucon.tools.mcp.server import (
                 convert, list_units, list_dimensions, check_dimensions
             )
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.convert = staticmethod(convert)
             cls.list_units = staticmethod(list_units)
             cls.list_dimensions = staticmethod(list_dimensions)
@@ -656,8 +656,8 @@ class TestComputeTool(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import compute, ComputeResult, ComputeStep
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import compute, ComputeResult, ComputeStep
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.compute = staticmethod(compute)
             cls.ComputeResult = ComputeResult
             cls.ComputeStep = ComputeStep
@@ -943,8 +943,8 @@ class TestComputeToolErrors(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import compute
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import compute
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.compute = staticmethod(compute)
             cls.ConversionError = ConversionError
             cls.skip_tests = False
@@ -1056,7 +1056,7 @@ class TestComputeToolErrors(unittest.TestCase):
             factors=[]
         )
         # Should return ComputeResult, not error
-        from ucon.mcp.server import ComputeResult
+        from ucon.tools.mcp.server import ComputeResult
         self.assertIsInstance(result, ComputeResult)
         self.assertAlmostEqual(result.quantity, 100.0)
         self.assertEqual(result.dimension, "length")
@@ -1068,12 +1068,12 @@ class TestSessionTools(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import (
+            from ucon.tools.mcp.server import (
                 define_unit, define_conversion, reset_session, convert,
                 UnitDefinitionResult, ConversionDefinitionResult, SessionResult,
                 _reset_fallback_session,
             )
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.define_unit = staticmethod(define_unit)
             cls.define_conversion = staticmethod(define_conversion)
             cls.reset_session = staticmethod(reset_session)
@@ -1181,8 +1181,8 @@ class TestInlineParameters(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import convert, compute, _reset_fallback_session
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.server import convert, compute, _reset_fallback_session
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.convert = staticmethod(convert)
             cls.compute = staticmethod(compute)
             cls.ConversionError = ConversionError
@@ -1308,7 +1308,7 @@ class TestGraphCaching(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import (
+            from ucon.tools.mcp.server import (
                 convert, _inline_graph_cache, _hash_definitions, _reset_fallback_session
             )
             cls.convert = staticmethod(convert)
@@ -1382,7 +1382,7 @@ class TestSessionState(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.session import SessionState, DefaultSessionState
+            from ucon.tools.mcp.session import SessionState, DefaultSessionState
             from ucon.core import Unit
             from ucon.dimension import Dimension
             cls.SessionState = SessionState
@@ -1524,13 +1524,13 @@ class TestConcurrencyFeedbackIssues(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            from ucon.mcp.server import (
+            from ucon.tools.mcp.server import (
                 define_unit, define_conversion, reset_session, convert, compute,
                 check_dimensions, list_units,
                 UnitDefinitionResult, ConversionDefinitionResult,
                 _reset_fallback_session,
             )
-            from ucon.mcp.suggestions import ConversionError
+            from ucon.tools.mcp.suggestions import ConversionError
             cls.define_unit = staticmethod(define_unit)
             cls.define_conversion = staticmethod(define_conversion)
             cls.reset_session = staticmethod(reset_session)
