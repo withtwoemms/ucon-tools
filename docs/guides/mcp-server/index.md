@@ -181,6 +181,50 @@ reset_session()
 # → {"success": true, "message": "Session reset..."}
 ```
 
+### `define_quantity_kind`
+
+Register a quantity kind for semantic disambiguation.
+
+```python
+define_quantity_kind(
+    name="entropy_change",
+    dimension="energy/temperature",
+    description="Change in entropy for a thermodynamic process"
+)
+# → {"success": true, "name": "entropy_change", "vector_signature": "M·L²·T⁻²·Θ⁻¹", ...}
+```
+
+Quantity kinds identify physically distinct quantities that share the same dimensional signature (e.g., entropy change vs heat capacity).
+
+### `declare_computation`
+
+Declare computational intent before performing a calculation.
+
+```python
+declare_computation(
+    quantity_kind="entropy_change",
+    expected_unit="J/K"
+)
+# → {"declaration_id": "...", "status": "valid", "compatible_kinds": ["heat_capacity"], ...}
+```
+
+Establishes the expected quantity kind so `validate_result()` can verify the result.
+
+### `validate_result`
+
+Validate that a computed result matches the declared quantity kind.
+
+```python
+validate_result(
+    value=91.5,
+    unit="J/K",
+    reasoning="Calculated ΔS = Q/T for isothermal heat transfer"
+)
+# → {"passed": true, "confidence": "high", "semantic_warnings": [], ...}
+```
+
+Checks dimensional consistency and analyzes reasoning text for semantic conflicts.
+
 ### `list_formulas`
 
 List registered domain formulas with dimensional constraints.
@@ -270,3 +314,7 @@ The step trace shows dimensional consistency at each point, so Claude can verify
 
 - [Registering Formulas](registering-formulas.md) — Expose dimensionally-typed calculations to agents
 - [Custom Units via MCP](custom-units.md) — Define domain-specific units at runtime
+
+## Background
+
+- [Kind-of-Quantity Problem](https://docs.ucon.dev/architecture/kind-of-quantity) — Why dimensions alone don't uniquely identify physical quantities
