@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-11
+
+### Added
+
+- Kind-of-Quantity (KOQ) tools for semantic disambiguation of dimensionally degenerate quantities:
+  - `define_quantity_kind` — Register custom quantity kinds per session
+  - `declare_computation` — Declare expected quantity kind before computing
+  - `validate_result` — Validate result dimensions and detect semantic conflicts in reasoning
+- Semantic conflict detection: `validate_result` analyzes reasoning text for keyword conflicts (e.g., mentioning "ΔH" when declared kind is "gibbs_energy")
+- `KOQError` response type with structured error information and hints
+- New response types: `QuantityKindDefinitionResult`, `ComputationDeclaration`, `ValidationResult`
+
+### Fixed
+
+- Dimension vector comparison now uses canonical SI order (M, L, T, I, Θ, N, J), fixing false mismatches from ordering differences
+
+### Notes
+
+- KOQ tools address the "unit-correct, KOQ-wrong" error class where LLMs compute correct numeric values with correct units but misidentify the physical quantity
+- See [Kind-of-Quantity](https://docs.ucon.dev/architecture/kind-of-quantity) for conceptual background
+
 ## [0.1.0] - 2026-02-28
 
 ### Fixed
@@ -36,5 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
-[Unreleased]: https://github.com/withtwoemms/ucon-tools/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/withtwoemms/ucon-tools/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/withtwoemms/ucon-tools/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/withtwoemms/ucon-tools/releases/tag/0.1.0

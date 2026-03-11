@@ -22,6 +22,18 @@ from ucon.units import get_unit_by_name
 from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_graph
 from ucon.maps import LinearMap
 from ucon.tools.mcp.formulas import list_formulas as _list_formulas, get_formula
+from ucon.tools.mcp.koq import (
+    QuantityKindInfo,
+    QuantityKindDefinitionResult,
+    ComputationDeclaration,
+    ValidationResult,
+    ExtendedBasisResult,
+    ExtendedBasisInfo,
+    KOQError,
+    get_quantity_kind,
+    get_kinds_by_dimension,
+    check_semantic_conflicts,
+)
 from ucon.tools.mcp.session import SessionState, DefaultSessionState
 from ucon.tools.mcp.suggestions import (
     ConversionError,
@@ -1438,6 +1450,725 @@ def call_formula(
             unit=None,
             dimension="unknown",
         )
+
+
+# -----------------------------------------------------------------------------
+# KOQ (Kind-of-Quantity) Tools
+# -----------------------------------------------------------------------------
+
+
+def _get_dimension_vector(unit) -> str:
+    """Get the dimensional vector signature for a unit.
+
+    Returns a string like "M·L²·T⁻²·N⁻¹" representing the dimensional
+    signature of the unit in canonical KOQ order.
+    """
+    if unit is None:
+        return "1"
+
+    dim = unit.dimension if hasattr(unit, 'dimension') else Dimension.none
+    if dim == Dimension.none:
+        return "1"
+
+    vec = dim.vector
+    components = []
+
+    # KOQ canonical order: (symbol, basis_component_name)
+    koq_order = [
+        ("M", "mass"),
+        ("L", "length"),
+        ("T", "time"),
+        ("I", "current"),
+        ("Θ", "temperature"),
+        ("N", "amount_of_substance"),
+        ("J", "luminous_intensity"),
+    ]
+
+    for symbol, basis_name in koq_order:
+        try:
+            exp = vec[basis_name]
+        except (KeyError, TypeError):
+            continue
+
+        if exp == 0:
+            continue
+        elif exp == 1:
+            components.append(symbol)
+        elif exp == 2:
+            components.append(f"{symbol}²")
+        elif exp == 3:
+            components.append(f"{symbol}³")
+        elif exp == -1:
+            components.append(f"{symbol}⁻¹")
+        elif exp == -2:
+            components.append(f"{symbol}⁻²")
+        elif exp == -3:
+            components.append(f"{symbol}⁻³")
+        else:
+            components.append(f"{symbol}^{exp}")
+
+    return "·".join(components) if components else "1"
+
+
+def _normalize_dimension_vector(vector_str: str) -> str:
+    """Normalize a dimension vector string to canonical KOQ order.
+
+    Takes a vector like "M·L²·T⁻²·N⁻¹·Θ⁻¹" and returns it in canonical order
+    "M·L²·T⁻²·Θ⁻¹·N⁻¹" (M, L, T, I, Θ, N, J).
+
+    This ensures consistent comparison regardless of input order.
+    """
+    import re
+
+    # KOQ canonical order
+    koq_order = ["M", "L", "T", "I", "Θ", "N", "J"]
+
+    # Parse each component from the vector string
+    # Components are separated by · and may have exponents like ², ³, ⁻¹, ⁻², ^-1, etc.
+    exponents: dict[str, int] = {}
+
+    # Split by · (middle dot)
+    parts = vector_str.split("·")
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # Match symbol and optional exponent
+        # Symbols: M, L, T, I, Θ, N, J
+        # Exponents: ², ³, ⁻¹, ⁻², ⁻³, ^N, or none (implies 1)
+        match = re.match(r'^([MLTIΘNJ])(.*)$', part)
+        if not match:
+            # Try alternative theta representations
+            match = re.match(r'^(Theta|θ)(.*)$', part, re.IGNORECASE)
+            if match:
+                symbol = "Θ"
+                exp_str = match.group(2)
+            else:
+                continue  # Unknown symbol, skip
+        else:
+            symbol = match.group(1)
+            exp_str = match.group(2)
+
+        # Parse exponent
+        if not exp_str:
+            exp = 1
+        elif exp_str == "²":
+            exp = 2
+        elif exp_str == "³":
+            exp = 3
+        elif exp_str == "⁻¹":
+            exp = -1
+        elif exp_str == "⁻²":
+            exp = -2
+        elif exp_str == "⁻³":
+            exp = -3
+        elif exp_str.startswith("^"):
+            try:
+                exp = int(exp_str[1:])
+            except ValueError:
+                exp = 1
+        else:
+            # Try to parse superscript numbers
+            superscript_map = {"⁰": 0, "¹": 1, "²": 2, "³": 3, "⁴": 4, "⁵": 5,
+                              "⁶": 6, "⁷": 7, "⁸": 8, "⁹": 9, "⁻": "-"}
+            exp_digits = ""
+            for c in exp_str:
+                if c in superscript_map:
+                    exp_digits += str(superscript_map[c])
+            if exp_digits:
+                try:
+                    exp = int(exp_digits)
+                except ValueError:
+                    exp = 1
+            else:
+                exp = 1
+
+        exponents[symbol] = exponents.get(symbol, 0) + exp
+
+    # Rebuild in canonical order
+    components = []
+    for symbol in koq_order:
+        exp = exponents.get(symbol, 0)
+        if exp == 0:
+            continue
+        elif exp == 1:
+            components.append(symbol)
+        elif exp == 2:
+            components.append(f"{symbol}²")
+        elif exp == 3:
+            components.append(f"{symbol}³")
+        elif exp == -1:
+            components.append(f"{symbol}⁻¹")
+        elif exp == -2:
+            components.append(f"{symbol}⁻²")
+        elif exp == -3:
+            components.append(f"{symbol}⁻³")
+        else:
+            components.append(f"{symbol}^{exp}")
+
+    return "·".join(components) if components else "1"
+
+
+def _parse_dimension_to_vector(dimension_str: str) -> str | None:
+    """Parse a dimension string to a vector signature.
+
+    Accepts either:
+    - Human-readable: "energy/amount_of_substance", "energy/temperature"
+    - Vector notation: "M·L²·T⁻²·N⁻¹"
+
+    Returns the vector signature in canonical order, or None if parsing fails.
+    """
+    # If it's already in vector notation, normalize to canonical order
+    if any(c in dimension_str for c in ["·", "²", "³", "⁻"]):
+        return _normalize_dimension_vector(dimension_str)
+
+    # Try to parse as human-readable dimension
+    # Common patterns: "X", "X/Y", "X/Y/Z", "X*Y/Z"
+    known_vectors = {
+        # Pure dimensions
+        "energy": "M·L²·T⁻²",
+        "length": "L",
+        "mass": "M",
+        "time": "T",
+        "temperature": "Θ",
+        "amount_of_substance": "N",
+        "current": "I",
+        "luminosity": "J",
+        # Composite patterns
+        "energy/amount_of_substance": "M·L²·T⁻²·N⁻¹",
+        "energy/temperature": "M·L²·T⁻²·Θ⁻¹",
+        "energy/(temperature*amount_of_substance)": "M·L²·T⁻²·Θ⁻¹·N⁻¹",
+        "energy/(temperature·amount_of_substance)": "M·L²·T⁻²·Θ⁻¹·N⁻¹",
+    }
+
+    normalized = dimension_str.lower().replace(" ", "")
+    return known_vectors.get(normalized)
+
+
+@mcp.tool()
+def define_quantity_kind(
+    name: str,
+    dimension: str,
+    description: str = "",
+    aliases: list[str] | None = None,
+    category: str = "session",
+    disambiguation_hints: list[str] | None = None,
+    ctx: Context | None = None,
+) -> QuantityKindDefinitionResult | KOQError:
+    """
+    Register a quantity kind for KOQ disambiguation.
+
+    Quantity kinds identify physically distinct quantities that share
+    the same dimensional signature. For example, enthalpy and Gibbs energy
+    both have dimension energy/amount_of_substance but represent different
+    physical quantities.
+
+    Args:
+        name: Unique identifier for the kind (e.g., "reaction_gibbs_energy").
+        dimension: Dimension string, either human-readable (e.g., "energy/amount_of_substance")
+            or vector notation (e.g., "M·L²·T⁻²·N⁻¹").
+        description: Human-readable description of the quantity.
+        aliases: Alternative names for the kind.
+        category: Classification (defaults to "session").
+        disambiguation_hints: Tips for distinguishing from similar kinds.
+
+    Returns:
+        QuantityKindDefinitionResult on success.
+        KOQError if name conflicts or dimension is invalid.
+
+    Example:
+        define_quantity_kind(
+            name="reaction_gibbs_energy",
+            dimension="energy/amount_of_substance",
+            description="Gibbs energy change for a chemical reaction at constant T,P",
+            aliases=["delta_G_rxn"],
+            disambiguation_hints=["Use ΔG = ΔH - TΔS formula"]
+        )
+    """
+    session = _get_session(ctx)
+    aliases = aliases or []
+    disambiguation_hints = disambiguation_hints or []
+
+    # Check for duplicate name in built-in kinds
+    existing = get_quantity_kind(name)
+    if existing is not None:
+        return KOQError(
+            error=f"Quantity kind '{name}' is already defined as '{existing.description}'",
+            error_type="duplicate_kind",
+            parameter="name",
+            hints=["Use a different name or use the built-in kind"],
+        )
+
+    # Check for duplicate in session kinds
+    session_kinds = session.get_quantity_kinds()
+    if name in session_kinds:
+        return KOQError(
+            error=f"Quantity kind '{name}' is already defined in this session",
+            error_type="duplicate_kind",
+            parameter="name",
+            hints=["Use reset_session() to clear session kinds"],
+        )
+
+    # Parse dimension to vector notation
+    vector_signature = _parse_dimension_to_vector(dimension)
+    if vector_signature is None:
+        return KOQError(
+            error=f"Could not parse dimension: '{dimension}'",
+            error_type="invalid_dimension",
+            parameter="dimension",
+            hints=[
+                "Use human-readable: 'energy/amount_of_substance'",
+                "Or vector notation: 'M·L²·T⁻²·N⁻¹'",
+                "Use list_quantity_kinds() to see examples",
+            ],
+        )
+
+    # Create and register the kind
+    kind = QuantityKindInfo(
+        name=name,
+        dimension_name=dimension,
+        dimension_vector=vector_signature,
+        description=description,
+        aliases=tuple(aliases),
+        category=category,
+        disambiguation_hints=tuple(disambiguation_hints),
+    )
+    session.register_quantity_kind(kind)
+
+    return QuantityKindDefinitionResult(
+        success=True,
+        name=name,
+        dimension=dimension,
+        vector_signature=vector_signature,
+        category=category,
+        message=f"Quantity kind '{name}' registered for session.",
+    )
+
+
+@mcp.tool()
+def declare_computation(
+    quantity_kind: str,
+    expected_unit: str,
+    context: dict[str, str] | None = None,
+    ctx: Context | None = None,
+) -> ComputationDeclaration | KOQError:
+    """
+    Declare computational intent before performing a calculation.
+
+    This tool establishes the expected quantity kind before using
+    compute() or other calculation tools. After computation, use
+    validate_result() to verify the result matches the declaration.
+
+    Args:
+        quantity_kind: Name of the quantity kind (from list_quantity_kinds or
+            previously defined via define_quantity_kind).
+        expected_unit: Expected unit for the result (e.g., "kJ/mol").
+        context: Optional context information (e.g., {"temperature": "298 K"}).
+
+    Returns:
+        ComputationDeclaration with warnings about dimensionally compatible kinds.
+        KOQError if the quantity kind is unknown.
+
+    Example:
+        declare_computation(
+            quantity_kind="gibbs_energy",
+            expected_unit="kJ/mol",
+            context={"temperature": "298.15 K", "pressure": "1 bar"}
+        )
+    """
+    import uuid
+
+    session = _get_session(ctx)
+    session_kinds = session.get_quantity_kinds()
+
+    # Look up the quantity kind
+    kind = get_quantity_kind(quantity_kind, session_kinds)
+    if kind is None:
+        # Build suggestions
+        available_kinds = list(session_kinds.keys())
+        if available_kinds:
+            hint_msg = f"Available kinds: {', '.join(sorted(available_kinds)[:10])}"
+            if len(available_kinds) > 10:
+                hint_msg += "..."
+        else:
+            hint_msg = "No quantity kinds defined yet"
+        return KOQError(
+            error=f"Unknown quantity kind: '{quantity_kind}'",
+            error_type="unknown_kind",
+            parameter="quantity_kind",
+            hints=[
+                hint_msg,
+                "Use define_quantity_kind() to register quantity kinds",
+                "Use list_quantity_kinds() to see all defined kinds",
+            ],
+        )
+
+    # Parse expected unit to get dimension
+    parsed_unit, err = resolve_unit(expected_unit, parameter="expected_unit")
+    if err:
+        return KOQError(
+            error=f"Invalid expected_unit: '{expected_unit}'",
+            error_type="invalid_unit",
+            parameter="expected_unit",
+            hints=err.hints if hasattr(err, 'hints') else [],
+        )
+
+    unit_vector = _get_dimension_vector(parsed_unit)
+    expected_dim = kind.dimension_name
+
+    # Check dimension compatibility
+    warnings = []
+    if unit_vector != kind.dimension_vector:
+        warnings.append(
+            f"Expected unit '{expected_unit}' has dimension '{unit_vector}' "
+            f"which differs from kind '{quantity_kind}' dimension '{kind.dimension_vector}'"
+        )
+
+    # Find compatible kinds (same dimension vector)
+    compatible = get_kinds_by_dimension(kind.dimension_vector, session_kinds)
+    compatible_names = [k.name for k in compatible if k.name != quantity_kind]
+
+    if compatible_names:
+        warnings.append(
+            f"{len(compatible_names)} other kinds share this dimension: "
+            f"{', '.join(compatible_names[:5])}"
+            + ("..." if len(compatible_names) > 5 else "")
+        )
+
+    # Generate declaration ID
+    declaration_id = str(uuid.uuid4())[:8]
+
+    # Create and store declaration
+    decl = ComputationDeclaration(
+        declaration_id=declaration_id,
+        quantity_kind=quantity_kind,
+        expected_unit=expected_unit,
+        expected_dimension=expected_dim,
+        status="warning" if warnings else "valid",
+        warnings=warnings,
+        compatible_kinds=compatible_names,
+        message=f"Computation declared: computing '{quantity_kind}' in '{expected_unit}'",
+    )
+    session.set_active_computation(decl)
+
+    return decl
+
+
+@mcp.tool()
+def validate_result(
+    value: float,
+    unit: str,
+    declared_kind: str | None = None,
+    reasoning: str | None = None,
+    ctx: Context | None = None,
+) -> ValidationResult | KOQError:
+    """
+    Validate that a computed result matches the declared quantity kind.
+
+    Call this after compute() to verify the result is consistent with
+    the declared computation. Uses the active declaration if declared_kind
+    is not specified.
+
+    Args:
+        value: The computed numeric value.
+        unit: The result unit string.
+        declared_kind: Optional kind to validate against (uses active declaration if None).
+        reasoning: Optional reasoning text for semantic consistency checking.
+
+    Returns:
+        ValidationResult with pass/fail status and confidence level.
+        KOQError if no declaration is active and declared_kind not specified.
+
+    Example:
+        validate_result(
+            value=-228.6,
+            unit="kJ/mol",
+            reasoning="Calculated ΔG = ΔH - TΔS at 298 K"
+        )
+    """
+    session = _get_session(ctx)
+    session_kinds = session.get_quantity_kinds()
+
+    # Get the kind to validate against
+    if declared_kind is not None:
+        kind = get_quantity_kind(declared_kind, session_kinds)
+        if kind is None:
+            return KOQError(
+                error=f"Unknown quantity kind: '{declared_kind}'",
+                error_type="unknown_kind",
+                parameter="declared_kind",
+                hints=["Use list_quantity_kinds() to see available kinds"],
+            )
+        kind_name = declared_kind
+        expected_dimension = kind.dimension_vector
+    else:
+        # Use active declaration
+        active = session.get_active_computation()
+        if active is None:
+            return KOQError(
+                error="No active computation declaration",
+                error_type="no_active_declaration",
+                parameter=None,
+                hints=[
+                    "Use declare_computation() before validate_result()",
+                    "Or specify declared_kind parameter",
+                ],
+            )
+        kind = get_quantity_kind(active.quantity_kind, session_kinds)
+        kind_name = active.quantity_kind
+        expected_dimension = kind.dimension_vector if kind else "unknown"
+
+    # Parse result unit
+    parsed_unit, err = resolve_unit(unit, parameter="unit")
+    if err:
+        return KOQError(
+            error=f"Invalid unit: '{unit}'",
+            error_type="invalid_unit",
+            parameter="unit",
+            hints=err.hints if hasattr(err, 'hints') else [],
+        )
+
+    actual_dimension = _get_dimension_vector(parsed_unit)
+    dimension_match = actual_dimension == expected_dimension
+
+    # Check semantic consistency if reasoning provided
+    semantic_warnings = []
+    if reasoning and kind:
+        semantic_warnings = check_semantic_conflicts(kind_name, reasoning)
+
+    # Determine confidence level
+    if not dimension_match:
+        confidence = "low"
+        passed = False
+        explanation = f"Dimension mismatch: got '{actual_dimension}', expected '{expected_dimension}'"
+    elif semantic_warnings:
+        confidence = "medium"
+        passed = True
+        explanation = "Dimension matches but reasoning may indicate different quantity"
+    else:
+        confidence = "high"
+        passed = True
+        explanation = f"Result validated as '{kind_name}'"
+
+    # Build suggestions
+    suggestions = []
+    if not dimension_match:
+        suggestions.append(f"Check that '{unit}' is the correct unit for '{kind_name}'")
+    if semantic_warnings:
+        suggestions.append("Review reasoning to ensure it matches the declared quantity kind")
+
+    # Clear active declaration
+    session.set_active_computation(None)
+
+    return ValidationResult(
+        passed=passed,
+        value=value,
+        unit=unit,
+        declared_kind=kind_name,
+        actual_dimension=actual_dimension,
+        expected_dimension=expected_dimension,
+        dimension_match=dimension_match,
+        semantic_warnings=semantic_warnings,
+        confidence=confidence,
+        explanation=explanation,
+        suggestions=suggestions,
+    )
+
+
+@mcp.tool()
+def list_quantity_kinds(
+    dimension: str | None = None,
+    category: str | None = None,
+    ctx: Context | None = None,
+) -> list[dict] | KOQError:
+    """
+    List registered quantity kinds, optionally filtered.
+
+    Returns both built-in and session-defined quantity kinds.
+
+    Args:
+        dimension: Optional filter by dimension (e.g., "energy/amount_of_substance"
+            or vector notation "M·L²·T⁻²·N⁻¹").
+        category: Optional filter by category (e.g., "thermodynamic", "mechanical").
+
+    Returns:
+        List of quantity kind information dicts.
+        KOQError if dimension filter is invalid.
+
+    Example:
+        # List all kinds with energy/mole dimension
+        list_quantity_kinds(dimension="energy/amount_of_substance")
+
+        # List all thermodynamic kinds
+        list_quantity_kinds(category="thermodynamic")
+    """
+    session = _get_session(ctx)
+    session_kinds = session.get_quantity_kinds()
+
+    # Parse dimension filter if provided
+    dimension_vector = None
+    if dimension:
+        dimension_vector = _parse_dimension_to_vector(dimension)
+        # If not a known pattern, assume it's already a vector
+        if dimension_vector is None:
+            dimension_vector = dimension
+
+    # Collect session-defined kinds
+    all_kinds = list(session_kinds.values())
+
+    # Apply filters
+    result = []
+    for kind in all_kinds:
+        if dimension_vector and kind.dimension_vector != dimension_vector:
+            continue
+        if category and kind.category != category:
+            continue
+
+        result.append({
+            "name": kind.name,
+            "dimension_name": kind.dimension_name,
+            "dimension_vector": kind.dimension_vector,
+            "description": kind.description,
+            "aliases": list(kind.aliases),
+            "category": kind.category,
+            "disambiguation_hints": list(kind.disambiguation_hints),
+        })
+
+    return sorted(result, key=lambda k: (k["category"], k["name"]))
+
+
+@mcp.tool()
+def extend_basis(
+    name: str,
+    base: str = "SI",
+    additional_components: list[dict] | None = None,
+    ctx: Context | None = None,
+) -> ExtendedBasisResult | KOQError:
+    """
+    Create an extended dimensional basis for KOQ disambiguation.
+
+    Extended bases add semantic components to the standard SI basis,
+    allowing finer-grained distinction between quantity kinds.
+
+    The basis is stored in session state and persists for the session lifetime.
+    Use list_extended_bases() to see available bases.
+
+    Note: Phase 1 implementation is informational only. Extended bases
+    help explain disambiguation strategies but don't yet affect conversions.
+
+    Args:
+        name: Name for the extended basis.
+        base: Starting basis ("SI", "CGS"). Defaults to "SI".
+        additional_components: List of new components, each with:
+            - name: Component name (e.g., "thermal")
+            - symbol: Component symbol (e.g., "Φ")
+            - description: What the component represents
+
+    Returns:
+        ExtendedBasisResult with the new basis description.
+        KOQError if base is unknown or name already exists.
+
+    Example:
+        extend_basis(
+            name="thermodynamic",
+            base="SI",
+            additional_components=[
+                {"name": "thermal", "symbol": "Φ", "description": "Thermal nature marker"},
+                {"name": "work", "symbol": "Ψ", "description": "Work/mechanical marker"}
+            ]
+        )
+    """
+    session = _get_session(ctx)
+
+    # Check for duplicate name
+    existing_bases = session.get_extended_bases()
+    if name in existing_bases:
+        return KOQError(
+            error=f"Extended basis '{name}' already exists in session",
+            error_type="duplicate_basis",
+            parameter="name",
+            hints=["Use a different name or reset_session() to clear existing bases"],
+        )
+
+    valid_bases = {"SI", "CGS"}
+    if base not in valid_bases:
+        return KOQError(
+            error=f"Unknown base: '{base}'",
+            error_type="unknown_base",
+            parameter="base",
+            hints=[f"Valid bases: {', '.join(valid_bases)}"],
+        )
+
+    additional_components = additional_components or []
+
+    # SI base components
+    si_components = ["M (mass)", "L (length)", "T (time)", "I (current)",
+                     "Θ (temperature)", "N (amount)", "J (luminosity)"]
+
+    # Build component list
+    components = si_components.copy()
+    additional_tuples = []
+    for comp in additional_components:
+        comp_name = comp.get("name", "unknown")
+        comp_symbol = comp.get("symbol", "?")
+        comp_desc = comp.get("description", "")
+        components.append(f"{comp_symbol} ({comp_name})")
+        additional_tuples.append((comp_name, comp_symbol, comp_desc))
+
+    # Store in session
+    basis_info = ExtendedBasisInfo(
+        name=name,
+        base=base,
+        components=tuple(components),
+        additional_components=tuple(additional_tuples),
+    )
+    session.register_extended_basis(basis_info)
+
+    return ExtendedBasisResult(
+        success=True,
+        name=name,
+        base=base,
+        components=components,
+        message=f"Extended basis '{name}' created with {len(components)} components. "
+                f"(Phase 1: informational only)",
+    )
+
+
+@mcp.tool()
+def list_extended_bases(
+    ctx: Context | None = None,
+) -> list[dict]:
+    """
+    List all extended bases defined in the current session.
+
+    Returns:
+        List of extended basis information dictionaries, each containing:
+        - name: The basis name
+        - base: The starting basis (e.g., "SI")
+        - components: List of all components in the basis
+        - additional_components: List of added components as [name, symbol, description]
+
+    Example:
+        list_extended_bases()
+        # → [{"name": "thermodynamic", "base": "SI", "components": [...], ...}]
+    """
+    session = _get_session(ctx)
+    bases = session.get_extended_bases()
+
+    return [
+        {
+            "name": basis.name,
+            "base": basis.base,
+            "components": list(basis.components),
+            "additional_components": [
+                {"name": c[0], "symbol": c[1], "description": c[2]}
+                for c in basis.additional_components
+            ],
+        }
+        for basis in bases.values()
+    ]
 
 
 # -----------------------------------------------------------------------------
