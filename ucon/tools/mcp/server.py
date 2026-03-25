@@ -175,6 +175,7 @@ def _build_inline_graph(
                 src=edge_dict.get('src', ''),
                 dst=edge_dict.get('dst', ''),
                 factor=float(edge_dict.get('factor', 1.0)),
+                offset=float(edge_dict.get('offset', 0.0)),
             )
             edge_def.materialize(graph)
         except PackageLoadError as e:
@@ -278,6 +279,7 @@ class ConversionDefinitionResult(BaseModel):
     src: str
     dst: str
     factor: float
+    offset: float = 0.0
     message: str
 
 
@@ -1159,12 +1161,13 @@ def define_conversion(
     src: str,
     dst: str,
     factor: float,
+    offset: float = 0.0,
     ctx: Context | None = None,
 ) -> ConversionDefinitionResult | ConversionError:
     """
     Define a conversion edge between two units for the current session.
 
-    The conversion factor specifies: dst_value = src_value × factor
+    The conversion factor specifies: dst_value = src_value × factor + offset
 
     Both src and dst must be resolvable units - either standard ucon units
     or custom units previously defined via define_unit().
@@ -1173,6 +1176,8 @@ def define_conversion(
         src: Source unit name or alias (e.g., "slug").
         dst: Destination unit name or alias (e.g., "kg").
         factor: Conversion multiplier (e.g., 14.5939 for slug → kg).
+        offset: Additive offset for affine conversions (default 0.0).
+            Use for temperature scales or other shifted conversions.
 
     Returns:
         ConversionDefinitionResult confirming the edge was added.
@@ -1186,7 +1191,7 @@ def define_conversion(
 
     # Create edge definition and materialize
     try:
-        edge_def = EdgeDef(src=src, dst=dst, factor=factor)
+        edge_def = EdgeDef(src=src, dst=dst, factor=factor, offset=offset)
         edge_def.materialize(graph)
     except PackageLoadError as e:
         return ConversionError(
@@ -1204,7 +1209,8 @@ def define_conversion(
         src=src,
         dst=dst,
         factor=factor,
-        message=f"Conversion edge '{src}' → '{dst}' (factor={factor}) added to session.",
+        offset=offset,
+        message=f"Conversion edge '{src}' → '{dst}' (factor={factor}, offset={offset}) added to session.",
     )
 
 
