@@ -1726,3 +1726,82 @@ class TestConcurrencyFeedbackIssues(unittest.TestCase):
         result = self.convert(35, "gizmo", "widget")
         self.assertNotIsInstance(result, self.ConversionError)
         self.assertAlmostEqual(result.quantity, 10.0)
+
+
+class TestAffineConversion(unittest.TestCase):
+    """Test affine (offset) support in define_conversion."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from ucon.tools.mcp.server import (
+                define_unit, define_conversion, reset_session, convert,
+                ConversionDefinitionResult,
+                _reset_fallback_session,
+            )
+            from ucon.tools.mcp.suggestions import ConversionError
+            cls.define_unit = staticmethod(define_unit)
+            cls.define_conversion = staticmethod(define_conversion)
+            cls.reset_session = staticmethod(reset_session)
+            cls.convert = staticmethod(convert)
+            cls.ConversionDefinitionResult = ConversionDefinitionResult
+            cls.ConversionError = ConversionError
+            cls._reset_fallback_session = staticmethod(_reset_fallback_session)
+            cls.skip_tests = False
+        except ImportError:
+            cls.skip_tests = True
+
+    def setUp(self):
+        if self.skip_tests:
+            self.skipTest("mcp not installed")
+        self._reset_fallback_session()
+
+    def tearDown(self):
+        if not self.skip_tests:
+            self._reset_fallback_session()
+
+    def test_define_conversion_with_offset(self):
+        """Test defining an affine conversion edge with offset."""
+        self.define_unit(name="custom_temp", dimension="temperature", aliases=["ctemp"])
+        result = self.define_conversion(
+            src="custom_temp", dst="kelvin", factor=1.0, offset=273.15,
+        )
+        self.assertIsInstance(result, self.ConversionDefinitionResult)
+        self.assertTrue(result.success)
+        self.assertEqual(result.src, "custom_temp")
+        self.assertEqual(result.dst, "kelvin")
+        self.assertAlmostEqual(result.factor, 1.0)
+        self.assertAlmostEqual(result.offset, 273.15)
+        self.assertIn("offset", result.message)
+
+    def test_session_affine_conversion_usable_in_convert(self):
+        """Test that affine conversion works end-to-end through convert()."""
+        # Define a custom temperature scale: ctemp = kelvin - 100
+        # So ctemp → kelvin: kelvin = 1.0 * ctemp + 100.0
+        self.define_unit(name="custom_temp", dimension="temperature", aliases=["ctemp"])
+        self.define_conversion(
+            src="custom_temp", dst="kelvin", factor=1.0, offset=100.0,
+        )
+
+        # 0 ctemp should be 100 K
+        result = self.convert(0, "ctemp", "kelvin")
+        self.assertNotIsInstance(result, self.ConversionError)
+        self.assertAlmostEqual(result.quantity, 100.0, places=2)
+
+        # 50 ctemp should be 150 K
+        result = self.convert(50, "ctemp", "kelvin")
+        self.assertNotIsInstance(result, self.ConversionError)
+        self.assertAlmostEqual(result.quantity, 150.0, places=2)
+
+    def test_define_conversion_offset_default_zero(self):
+        """Test that omitting offset defaults to linear (offset=0)."""
+        self.define_unit(name="slug", dimension="mass", aliases=["slug"])
+        result = self.define_conversion(src="slug", dst="kg", factor=14.5939)
+        self.assertIsInstance(result, self.ConversionDefinitionResult)
+        self.assertTrue(result.success)
+        self.assertAlmostEqual(result.offset, 0.0)
+
+        # Verify linear behavior
+        result = self.convert(1, "slug", "kg")
+        self.assertNotIsInstance(result, self.ConversionError)
+        self.assertAlmostEqual(result.quantity, 14.5939, places=3)

@@ -700,3 +700,279 @@ All tools may return `ConversionError` with these error types:
 | `step` | int | For compute(), which factor step failed (0-indexed) |
 | `likely_fix` | string | Suggested correction (typos, dimension swaps) |
 | `hints` | list[str] | Additional guidance |
+
+---
+
+## Kind-of-Quantity (KOQ) Tools
+
+These tools disambiguate physically distinct quantities that share the same dimensional signature.
+For background, see [Kind-of-Quantity](https://docs.ucon.dev/architecture/kind-of-quantity).
+
+---
+
+## define_quantity_kind
+
+Register a quantity kind for semantic disambiguation.
+
+### Parameters
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `name` | string | Yes | Unique identifier (e.g., "reaction_gibbs_energy") |
+| `dimension` | string | Yes | Dimension string (e.g., "energy/amount_of_substance" or "M·L²·T⁻²·N⁻¹") |
+| `description` | string | No | Human-readable description |
+| `aliases` | list[str] | No | Alternative names |
+| `category` | string | No | Classification (default: "session") |
+| `disambiguation_hints` | list[str] | No | Tips for distinguishing from similar kinds |
+
+### Response Schema
+
+**Success: `QuantityKindDefinitionResult`**
+
+```json
+{
+  "success": true,
+  "name": "reaction_gibbs_energy",
+  "dimension": "energy/amount_of_substance",
+  "vector_signature": "M·L²·T⁻²·N⁻¹",
+  "category": "session",
+  "message": "Quantity kind 'reaction_gibbs_energy' registered for session."
+}
+```
+
+**Error: `KOQError`**
+
+```json
+{
+  "error": "Quantity kind 'gibbs_energy' is already defined",
+  "error_type": "duplicate_kind",
+  "parameter": "name",
+  "hints": ["Use a different name or use the built-in kind"]
+}
+```
+
+### Examples
+
+```python
+# Define a thermodynamic quantity kind
+define_quantity_kind(
+    name="reaction_gibbs_energy",
+    dimension="energy/amount_of_substance",
+    description="Gibbs energy change for a chemical reaction at constant T,P",
+    aliases=["delta_G_rxn"],
+    disambiguation_hints=["Use ΔG = ΔH - TΔS formula"]
+)
+
+# Define entropy change (distinct from heat capacity, same dimension)
+define_quantity_kind(
+    name="entropy_change",
+    dimension="energy/temperature",
+    description="Change in entropy for a process",
+    aliases=["delta_S"],
+    category="thermodynamic"
+)
+```
+
+---
+
+## declare_computation
+
+Declare computational intent before performing a calculation.
+
+Establishes the expected quantity kind before using `compute()` or other calculation tools.
+After computation, use `validate_result()` to verify the result matches the declaration.
+
+### Parameters
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `quantity_kind` | string | Yes | Name of quantity kind (from `define_quantity_kind`) |
+| `expected_unit` | string | Yes | Expected unit for the result (e.g., "kJ/mol") |
+| `context` | dict[str, str] | No | Optional context (e.g., `{"temperature": "298 K"}`) |
+
+### Response Schema
+
+**Success: `ComputationDeclaration`**
+
+```json
+{
+  "declaration_id": "a1b2c3d4-...",
+  "quantity_kind": "gibbs_energy",
+  "expected_unit": "kJ/mol",
+  "expected_dimension": "M·L²·T⁻²·N⁻¹",
+  "status": "valid",
+  "warnings": [],
+  "compatible_kinds": ["enthalpy", "chemical_potential", "activation_energy"],
+  "message": "Computation declared: expecting 'gibbs_energy' in kJ/mol"
+}
+```
+
+**Error: `KOQError`**
+
+```json
+{
+  "error": "Unknown quantity kind: 'gibs_energy'",
+  "error_type": "unknown_kind",
+  "parameter": "quantity_kind",
+  "hints": [
+    "Available kinds: gibbs_energy, enthalpy, entropy_change...",
+    "Use define_quantity_kind() to register quantity kinds"
+  ]
+}
+```
+
+### Examples
+
+```python
+# Declare intent to compute Gibbs energy
+declare_computation(
+    quantity_kind="gibbs_energy",
+    expected_unit="kJ/mol",
+    context={"temperature": "298.15 K", "pressure": "1 bar"}
+)
+
+# Declare entropy calculation
+declare_computation(
+    quantity_kind="entropy_change",
+    expected_unit="J/K"
+)
+```
+
+---
+
+## validate_result
+
+Validate that a computed result matches the declared quantity kind.
+
+Call this after `compute()` to verify dimensional and semantic consistency.
+Uses the active declaration from `declare_computation()` if `declared_kind` is not specified.
+
+### Parameters
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `value` | float | Yes | The computed numeric value |
+| `unit` | string | Yes | The result unit string |
+| `declared_kind` | string | No | Kind to validate against (uses active declaration if None) |
+| `reasoning` | string | No | Reasoning text for semantic consistency checking |
+
+### Response Schema
+
+**Success: `ValidationResult`**
+
+```json
+{
+  "passed": true,
+  "value": -228.6,
+  "unit": "kJ/mol",
+  "declared_kind": "gibbs_energy",
+  "actual_dimension": "M·L²·T⁻²·N⁻¹",
+  "expected_dimension": "M·L²·T⁻²·N⁻¹",
+  "dimension_match": true,
+  "semantic_warnings": [],
+  "confidence": "high",
+  "explanation": "Result validated as 'gibbs_energy'",
+  "suggestions": []
+}
+```
+
+**With semantic warnings:**
+
+```json
+{
+  "passed": true,
+  "value": -228.6,
+  "unit": "kJ/mol",
+  "declared_kind": "gibbs_energy",
+  "actual_dimension": "M·L²·T⁻²·N⁻¹",
+  "expected_dimension": "M·L²·T⁻²·N⁻¹",
+  "dimension_match": true,
+  "semantic_warnings": [
+    "Reasoning mentions 'ΔH' which is associated with 'enthalpy', but declared kind is 'gibbs_energy'"
+  ],
+  "confidence": "medium",
+  "explanation": "Dimension matches but reasoning may indicate different quantity",
+  "suggestions": ["Review reasoning to ensure it matches the declared quantity kind"]
+}
+```
+
+**Error: `KOQError`**
+
+```json
+{
+  "error": "No active computation declaration",
+  "error_type": "no_active_declaration",
+  "parameter": null,
+  "hints": [
+    "Use declare_computation() before validate_result()",
+    "Or specify declared_kind parameter"
+  ]
+}
+```
+
+### Examples
+
+```python
+# Validate using active declaration
+validate_result(
+    value=-228.6,
+    unit="kJ/mol",
+    reasoning="Calculated ΔG = ΔH - TΔS at 298 K"
+)
+
+# Validate with explicit kind
+validate_result(
+    value=91.5,
+    unit="J/K",
+    declared_kind="entropy_change",
+    reasoning="Computed ΔS = Q/T for isothermal heat transfer"
+)
+```
+
+---
+
+## KOQ Error Types
+
+| Error Type | Description |
+|------------|-------------|
+| `unknown_kind` | Quantity kind name not recognized |
+| `duplicate_kind` | Attempting to redefine existing kind |
+| `dimension_mismatch` | Result dimension doesn't match declared kind |
+| `no_active_declaration` | `validate_result()` called without prior `declare_computation()` |
+| `invalid_unit` | Unit string cannot be parsed |
+
+---
+
+## KOQ Workflow
+
+The recommended workflow for KOQ-aware computations:
+
+```python
+# 1. Define the quantity kind (if not already defined)
+define_quantity_kind(
+    name="entropy_change",
+    dimension="energy/temperature",
+    description="Change in entropy for a thermodynamic process"
+)
+
+# 2. Declare computational intent
+declare_computation(
+    quantity_kind="entropy_change",
+    expected_unit="J/K"
+)
+
+# 3. Perform calculation (using compute() or manually)
+# ... calculation logic ...
+
+# 4. Validate the result
+validate_result(
+    value=91.5,
+    unit="J/K",
+    reasoning="Calculated ΔS = Q/T = 25000 J / 273.15 K"
+)
+# → {"passed": true, "confidence": "high", ...}
+```
+
+This workflow catches errors where the numeric result and units are correct,
+but the physical quantity is misidentified (e.g., computing heat capacity
+when entropy change was intended).

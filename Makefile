@@ -23,14 +23,20 @@ RESET := \033[0m
 .PHONY: help
 help:
 	@echo "\n${YELLOW}ucon-tools Development Commands${RESET}\n"
-	@echo "  ${CYAN}install${RESET}       - Install package with all extras"
-	@echo "  ${CYAN}install-test${RESET}  - Install with test dependencies only"
-	@echo "  ${CYAN}test${RESET}          - Run tests (PYTHON=X.Y for specific version)"
-	@echo "  ${CYAN}test-all${RESET}      - Run tests across all supported Python versions"
-	@echo "  ${CYAN}coverage${RESET}      - Generate coverage report"
-	@echo "  ${CYAN}build${RESET}         - Build source and wheel distributions"
-	@echo "  ${CYAN}venv${RESET}          - Create virtual environment"
-	@echo "  ${CYAN}clean${RESET}         - Remove build artifacts and caches"
+	@echo "  ${CYAN}install${RESET}           - Install package with all extras"
+	@echo "  ${CYAN}install-test${RESET}      - Install with test dependencies only"
+	@echo "  ${CYAN}test${RESET}              - Run tests (PYTHON=X.Y for specific version)"
+	@echo "  ${CYAN}test-all${RESET}          - Run tests across all supported Python versions"
+	@echo "  ${CYAN}coverage${RESET}          - Generate coverage report"
+	@echo "  ${CYAN}build${RESET}             - Build source and wheel distributions"
+	@echo "  ${CYAN}venv${RESET}              - Create virtual environment"
+	@echo "  ${CYAN}clean${RESET}             - Remove build artifacts and caches"
+	@echo ""
+	@echo "${YELLOW}MCP Server Commands:${RESET}\n"
+	@echo "  ${CYAN}mcp-server${RESET}        - Start MCP server (foreground)"
+	@echo "  ${CYAN}mcp-server-bg${RESET}     - Start MCP server (background)"
+	@echo "  ${CYAN}mcp-server-stop${RESET}   - Stop background MCP server"
+	@echo "  ${CYAN}mcp-server-status${RESET} - Check if MCP server is running"
 	@echo ""
 	@echo "${YELLOW}Eval Commands:${RESET}\n"
 	@echo "  ${CYAN}eval-decompose-live${RESET}  - Run decompose eval against live MCP server"
@@ -119,6 +125,53 @@ ${DOCS_DEPS_INSTALLED}: pyproject.toml | ${UV_VENV}
 	@echo "${GREEN}Installing docs dependencies...${RESET}"
 	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv sync --python ${PYTHON} --extra docs
 	@touch ${DOCS_DEPS_INSTALLED}
+
+# --- MCP Server ---
+MCP_PID_FILE := .mcp-server.pid
+
+.PHONY: mcp-server
+mcp-server: ${DEPS_INSTALLED}
+	@echo "${GREEN}Starting ucon MCP server (foreground)...${RESET}"
+	@echo "${CYAN}Press Ctrl+C to stop${RESET}"
+	@UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} ucon-mcp
+
+.PHONY: mcp-server-bg
+mcp-server-bg: ${DEPS_INSTALLED}
+	@if [ -f ${MCP_PID_FILE} ] && kill -0 $$(cat ${MCP_PID_FILE}) 2>/dev/null; then \
+		echo "${YELLOW}MCP server already running (PID: $$(cat ${MCP_PID_FILE}))${RESET}"; \
+	else \
+		echo "${GREEN}Starting ucon MCP server (background)...${RESET}"; \
+		UV_PROJECT_ENVIRONMENT=${UV_VENV} uv run --python ${PYTHON} ucon-mcp & \
+		echo $$! > ${MCP_PID_FILE}; \
+		sleep 1; \
+		echo "${CYAN}MCP server started (PID: $$(cat ${MCP_PID_FILE}))${RESET}"; \
+	fi
+
+.PHONY: mcp-server-stop
+mcp-server-stop:
+	@if [ -f ${MCP_PID_FILE} ]; then \
+		PID=$$(cat ${MCP_PID_FILE}); \
+		if kill -0 $$PID 2>/dev/null; then \
+			echo "${GREEN}Stopping MCP server (PID: $$PID)...${RESET}"; \
+			kill $$PID; \
+			rm -f ${MCP_PID_FILE}; \
+			echo "${CYAN}MCP server stopped${RESET}"; \
+		else \
+			echo "${YELLOW}MCP server not running (stale PID file)${RESET}"; \
+			rm -f ${MCP_PID_FILE}; \
+		fi \
+	else \
+		echo "${YELLOW}No MCP server PID file found${RESET}"; \
+	fi
+
+.PHONY: mcp-server-status
+mcp-server-status:
+	@if [ -f ${MCP_PID_FILE} ] && kill -0 $$(cat ${MCP_PID_FILE}) 2>/dev/null; then \
+		echo "${GREEN}MCP server is running (PID: $$(cat ${MCP_PID_FILE}))${RESET}"; \
+	else \
+		echo "${YELLOW}MCP server is not running${RESET}"; \
+		[ -f ${MCP_PID_FILE} ] && rm -f ${MCP_PID_FILE}; \
+	fi
 
 # --- Building ---
 .PHONY: build
