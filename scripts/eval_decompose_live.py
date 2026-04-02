@@ -132,6 +132,126 @@ class LiveServerEval:
                 error=str(e),
             )
 
+    async def run_structured_decompose_compute(
+        self,
+        session,
+        name: str,
+        initial_value: float,
+        initial_unit: str,
+        target_unit: str,
+        known_quantities: list[dict],
+        expected_value: float,
+        tolerance: float = 0.02,
+    ) -> EvalResult:
+        """Run structured decompose → compute and verify result."""
+        try:
+            # Step 1: decompose (structured mode)
+            decompose_result = await self.call_tool(session, "decompose", {
+                "initial_unit": initial_unit,
+                "target_unit": target_unit,
+                "known_quantities": known_quantities,
+            })
+
+            if "error_type" in decompose_result:
+                return EvalResult(
+                    name=name,
+                    passed=False,
+                    expected=expected_value,
+                    actual=None,
+                    error=f"decompose: {decompose_result['error']}",
+                )
+
+            # Step 2: compute
+            compute_result = await self.call_tool(session, "compute", {
+                "initial_value": initial_value,
+                "initial_unit": decompose_result["initial_unit"],
+                "factors": decompose_result["factors"],
+            })
+
+            if "error_type" in compute_result:
+                return EvalResult(
+                    name=name,
+                    passed=False,
+                    expected=expected_value,
+                    actual=None,
+                    error=f"compute: {compute_result['error']}",
+                )
+
+            # Step 3: verify
+            actual = compute_result["quantity"]
+            if expected_value == 0:
+                passed = abs(actual) < 1e-5
+            else:
+                rel_error = abs(actual - expected_value) / abs(expected_value)
+                passed = rel_error < tolerance
+
+            return EvalResult(
+                name=name,
+                passed=passed,
+                expected=expected_value,
+                actual=actual,
+                error=None if passed else f"rel_error={rel_error:.4f}",
+            )
+
+        except Exception as e:
+            return EvalResult(
+                name=name,
+                passed=False,
+                expected=expected_value,
+                actual=None,
+                error=str(e),
+            )
+
+    async def run_structured_expect_error(
+        self,
+        session,
+        name: str,
+        initial_unit: str,
+        target_unit: str,
+        known_quantities: list[dict],
+        expect_hint: str | None = None,
+    ) -> EvalResult:
+        """Run structured decompose and expect an error, optionally checking for a hint."""
+        try:
+            result = await self.call_tool(session, "decompose", {
+                "initial_unit": initial_unit,
+                "target_unit": target_unit,
+                "known_quantities": known_quantities,
+            })
+
+            if "error_type" not in result:
+                return EvalResult(
+                    name=name,
+                    passed=False,
+                    expected=None,
+                    actual=None,
+                    error=f"Expected error but got success: {result}",
+                )
+
+            # Check for expected hint if specified
+            if expect_hint:
+                hints = result.get("hints", [])
+                hint_text = " ".join(hints)
+                if expect_hint.lower() not in hint_text.lower():
+                    return EvalResult(
+                        name=name,
+                        passed=False,
+                        expected=None,
+                        actual=None,
+                        error=f"Error returned but missing hint '{expect_hint}'. Hints: {hints}",
+                    )
+
+            return EvalResult(name=name, passed=True, expected=None, actual=None)
+
+        except Exception as e:
+            return EvalResult(
+                name=name,
+                passed=False,
+                expected=None,
+                actual=None,
+                error=str(e),
+            )
+
     async def run_expect_error(
         self,
         session,
@@ -197,6 +317,99 @@ class LiveServerEval:
             result = await self.run_decompose_compute(session, query, expected)
             results.append(result)
             self._print_result(result)
+
+        # === Structured Mode ===
+        print("\n--- Structured Mode ---")
+
+        # Eval 2.1: Weight-based dosing
+        result = await self.run_structured_decompose_compute(
+            session,
+            name="Eval 2.1: Dopamine 5 mcg/kg/min, 70 kg → mg/h",
+            initial_value=5,
+            initial_unit="mcg/(kg*min)",
+            target_unit="mg/h",
+            known_quantities=[{"value": 70, "unit": "kg"}],
+            expected_value=21.0,
+        )
+        results.append(result)
+        self._print_result(result)
+
+        # Eval 2.3: Concentration with separate quantities
+        result = await self.run_structured_decompose_compute(
+            session,
+            name="Eval 2.3: Dopamine 5 mcg/kg/min, 80 kg, 400 mg/250 mL → mL/h",
+            initial_value=5,
+            initial_unit="mcg/(kg*min)",
+            target_unit="mL/h",
+            known_quantities=[
+                {"value": 80, "unit": "kg"},
+                {"value": 250, "unit": "mL"},
+                {"value": 400, "unit": "mg"},
+            ],
+            expected_value=15.0,
+        )
+        results.append(result)
+        self._print_result(result)
+
+        # Eval 2.3b: Concentration pre-composed
+        result = await self.run_structured_decompose_compute(
+            session,
+            name="Eval 2.3b: Dopamine 5 mcg/kg/min, 80 kg, 0.625 mL/mg → mL/h",
+            initial_value=5,
+            initial_unit="mcg/(kg*min)",
+            target_unit="mL/h",
+            known_quantities=[
+                {"value": 80, "unit": "kg"},
+                {"value": 0.625, "unit": "mL/mg"},
+            ],
+            expected_value=15.0,
+        )
+        results.append(result)
+        self._print_result(result)
+
+        # Eval 2.4: Dosing with count rate
+        result = await self.run_structured_decompose_compute(
+            session,
+            name="Eval 2.4: 25 mg/kg/d, 15 kg, 3 ea/d → mg",
+            initial_value=25,
+            initial_unit="mg/(kg*d)",
+            target_unit="mg",
+            known_quantities=[
+                {"value": 15, "unit": "kg"},
+                {"value": 3, "unit": "ea/d"},
+            ],
+            expected_value=125.0,
+        )
+        results.append(result)
+        self._print_result(result)
+
+        # Eval 2.4 error: bare count diagnostic
+        result = await self.run_structured_expect_error(
+            session,
+            name="Eval 2.4 error: bare ea returns diagnostic",
+            initial_unit="mg/(kg*d)",
+            target_unit="mg",
+            known_quantities=[
+                {"value": 15, "unit": "kg"},
+                {"value": 3, "unit": "ea"},
+            ],
+            expect_hint="ea/d",
+        )
+        results.append(result)
+        self._print_result(result)
+
+        # Eval 3.1: Specific impulse
+        result = await self.run_structured_decompose_compute(
+            session,
+            name="Eval 3.1: Isp 300 s × g₀ 9.80665 m/s² → m/s",
+            initial_value=300,
+            initial_unit="s",
+            target_unit="m/s",
+            known_quantities=[{"value": 9.80665, "unit": "m/s^2"}],
+            expected_value=2941.995,
+        )
+        results.append(result)
+        self._print_result(result)
 
         # === Error Cases ===
         print("\n--- Error Cases (expect rejection) ---")
