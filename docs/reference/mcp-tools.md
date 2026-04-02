@@ -152,6 +152,33 @@ decompose(
     ]
 )
 
+# Structured mode: concentration-based infusion
+# Problem: "Dopamine 5 mcg/kg/min for 80 kg patient. Drug is 400 mg in 250 mL. mL/h?"
+decompose(
+    initial_unit="mcg/(kg*min)",
+    target_unit="mL/h",
+    known_quantities=[
+        {"value": 80, "unit": "kg"},
+        {"value": 250, "unit": "mL"},
+        {"value": 400, "unit": "mg"},
+    ],
+)
+# → 400 mg placed in denominator (constraint solver), plus mcg→mg and min→h
+#   bridging factors (auto-bridged). compute(initial_value=5, factors=...) == 15.0 mL/h
+
+# Structured mode: dosing with count rate
+# Problem: "25 mg/kg/day for 15 kg child, divided into 3 doses/day. mg per dose?"
+# Note: express count as a rate (ea/d), not bare ea
+decompose(
+    initial_unit="mg/(kg*d)",
+    target_unit="mg",
+    known_quantities=[
+        {"value": 15, "unit": "kg"},
+        {"value": 3, "unit": "ea/d"},
+    ],
+)
+# → compute(initial_value=25, factors=...) == 125.0 mg
+
 # Chain with compute:
 result = decompose(query="3 TB to GiB")
 compute(

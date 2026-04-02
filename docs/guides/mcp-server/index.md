@@ -88,7 +88,7 @@ decompose(
 # Pass the result's factors directly to compute()
 ```
 
-The tool performs dimensional gap analysis, places known quantities in the correct position (numerator or denominator), and adds conversion factors for remaining unit mismatches.
+The tool performs dimensional gap analysis, solves for the correct signed placement of each quantity (numerator or denominator) via constraint satisfaction, and auto-bridges residual unit mismatches (e.g., mcg to mg, min to h). For dimensionless counts like `ea`, express them as rates (`ea/d`, `ea/h`) to provide the missing time dimension.
 
 ### `compute`
 
