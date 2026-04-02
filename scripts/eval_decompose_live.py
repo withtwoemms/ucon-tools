@@ -252,6 +252,57 @@ class LiveServerEval:
                 error=str(e),
             )
 
+    async def run_convert(
+        self,
+        session,
+        name: str,
+        value: float,
+        from_unit: str,
+        to_unit: str,
+        expected_value: float,
+        tolerance: float = 0.02,
+    ) -> EvalResult:
+        """Call convert tool directly and verify result."""
+        try:
+            result = await self.call_tool(session, "convert", {
+                "value": value,
+                "from_unit": from_unit,
+                "to_unit": to_unit,
+            })
+
+            if "error_type" in result:
+                return EvalResult(
+                    name=name,
+                    passed=False,
+                    expected=expected_value,
+                    actual=None,
+                    error=f"convert: {result['error']}",
+                )
+
+            actual = result["quantity"]
+            if expected_value == 0:
+                passed = abs(actual) < 1e-5
+            else:
+                rel_error = abs(actual - expected_value) / abs(expected_value)
+                passed = rel_error < tolerance
+
+            return EvalResult(
+                name=name,
+                passed=passed,
+                expected=expected_value,
+                actual=actual,
+                error=None if passed else f"rel_error={rel_error:.4f}",
+            )
+
+        except Exception as e:
+            return EvalResult(
+                name=name,
+                passed=False,
+                expected=expected_value,
+                actual=None,
+                error=str(e),
+            )
+
     async def run_expect_error(
         self,
         session,
@@ -410,6 +461,26 @@ class LiveServerEval:
         )
         results.append(result)
         self._print_result(result)
+
+        # === Cross-System Conversion Edges (ucon 1.1.1 fix) ===
+        print("\n--- Cross-System Conversion Edges ---")
+        edge_tests = [
+            # CGS→SI edges that were missing in ucon 1.1.0
+            ("poise → Pa·s", 1, "P", "Pa*s", 0.1),
+            ("stokes → m²/s", 1, "St", "m^2/s", 1e-4),
+            ("galileo → m/s²", 1, "Gal", "m/s^2", 0.01),
+            ("oersted → A/m", 1, "Oe", "A/m", 79.5775),
+            ("langley → J/m²", 1, "langley", "J/m^2", 41840),
+            ("kayser → m⁻¹", 1, "kayser", "m^-1", 100),
+            # SI-internal edge that was missing
+            ("reyn → Pa·s", 1, "reyn", "Pa*s", 6894.757),
+        ]
+        for name, value, from_unit, to_unit, expected in edge_tests:
+            result = await self.run_convert(
+                session, name, value, from_unit, to_unit, expected,
+            )
+            results.append(result)
+            self._print_result(result)
 
         # === Error Cases ===
         print("\n--- Error Cases (expect rejection) ---")
