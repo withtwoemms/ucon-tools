@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - When `ea` (dimensionless count) is provided but cannot fill a dimensional gap, returns an actionable error suggesting rate forms (e.g., `ea/d`, `ea/h`, `ea/min`)
   - Quantities expressed as rates (e.g., `3 ea/d`) are handled correctly by the constraint solver
 
+- Fuzzy unit suggestions crashed on unknown units due to stale `_UNIT_REGISTRY` import path (`ucon.units` → `ucon.resolver`)
+
 ### Changed
 
 - Minimum `ucon` dependency bumped from `>=1.0.0` to `>=1.1.1`
