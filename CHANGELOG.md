@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-04-02
+
+### Fixed
+
+- `decompose` structured mode: constraint solver replaces greedy placement heuristic
+  - Correctly handles concentration problems where quantities must be placed in both numerator and denominator (e.g., 250 mL in numerator, 400 mg in denominator)
+  - Brute-force 2^N solver over sign assignments with Occam tiebreaker (fewest denominators) and literal unit name matching against initial unit factors
+  - Falls back to greedy scorer for N > 10 quantities
+- `decompose` structured mode: auto-bridging of residual unit mismatches
+  - After quantity placement, detects and inserts scale conversion factors (e.g., mcg → mg, min → h) so the factor chain produces the correct numeric result
+  - Handles both cancelling pairs (mcg⁺¹ · mg⁻¹) and surviving unit mismatches (min⁻¹ vs h⁻¹)
+- `decompose` structured mode: bare-count diagnostic for dimensionless quantities
+  - When `ea` (dimensionless count) is provided but cannot fill a dimensional gap, returns an actionable error suggesting rate forms (e.g., `ea/d`, `ea/h`, `ea/min`)
+  - Quantities expressed as rates (e.g., `3 ea/d`) are handled correctly by the constraint solver
+
+### Changed
+
+- Minimum `ucon` dependency bumped from `>=1.0.0` to `>=1.1.1`
+- Structured mode eval tests added to live server eval script
+
+## [0.3.1] - 2026-04-01
+
+### Fixed
+
+- `DimConstraint` reference in `mcp.schema` (#9)
+
 ## [0.3.0] - 2026-03-31
 
 ### Added
@@ -83,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[0.3.2]: https://github.com/withtwoemms/ucon-tools/compare/0.3.1...0.3.2
+[0.3.1]: https://github.com/withtwoemms/ucon-tools/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/withtwoemms/ucon-tools/compare/0.2.1...0.3.0
 [0.2.1]: https://github.com/withtwoemms/ucon-tools/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/withtwoemms/ucon-tools/compare/0.1.0...0.2.0
