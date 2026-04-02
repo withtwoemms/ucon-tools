@@ -9,7 +9,7 @@ to expose in MCP tool schemas.
 
 from typing import Callable, get_type_hints, get_origin, get_args, Annotated
 
-from ucon.core import DimConstraint
+from ucon.core import DimensionConstraint
 
 
 def extract_dimension_constraints(fn: Callable) -> dict[str, str | None]:
@@ -52,15 +52,15 @@ def extract_dimension_constraints(fn: Callable) -> dict[str, str | None]:
         if name == "return":
             continue
 
-        # Check if this is an Annotated type with DimConstraint
+        # Check if this is an Annotated type with DimensionConstraint
         if get_origin(hint) is Annotated:
             args = get_args(hint)
             for metadata in args[1:]:
-                if isinstance(metadata, DimConstraint):
+                if isinstance(metadata, DimensionConstraint):
                     constraints[name] = metadata.dimension.name
                     break
             else:
-                # Annotated but no DimConstraint found
+                # Annotated but no DimensionConstraint found
                 constraints[name] = None
         else:
             # Not annotated with dimension constraint
