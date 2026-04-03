@@ -15,7 +15,7 @@
   </tr>
 </table>
 
-> An **MCP server** that gives AI agents dimensionally-verified unit conversion and computation — powered by [ucon](https://github.com/withtwoemms/ucon).
+> Hostable interfaces for the [ucon](https://github.com/withtwoemms/ucon) dimensional analysis engine.
 
 **[Documentation](https://docs.ucon.dev)** · [MCP Server Guide](https://docs.ucon.dev/guides/mcp-server/) · [Tool Reference](https://docs.ucon.dev/reference/mcp-tools/)
 
@@ -23,7 +23,21 @@
 
 ## What is ucon-tools?
 
-`ucon-tools` exposes the [ucon](https://github.com/withtwoemms/ucon) dimensional analysis engine as an [MCP](https://modelcontextprotocol.io/) server. AI agents (Claude, Cursor, and other MCP clients) can convert units, perform multi-step factor-label calculations, and define custom units at runtime — with dimensional consistency validated at every step.
+[ucon](https://github.com/withtwoemms/ucon) is a unit-aware computation library for Python. `ucon-tools` packages it into interfaces that other systems can consume — MCP servers for AI agents, REST APIs for web services, CLIs for humans at a terminal.
+
+Each interface lives under `ucon.tools.<interface>` and is installable as an optional extra:
+
+| Interface | Package | Extra | Status |
+|-----------|---------|-------|--------|
+| MCP server | `ucon.tools.mcp` | `ucon-tools[mcp]` | Available |
+| REST API | `ucon.tools.rest` | `ucon-tools[rest]` | Planned |
+| CLI | `ucon.tools.cli` | `ucon-tools[cli]` | Planned |
+
+---
+
+## MCP Server
+
+The MCP server gives AI agents (Claude, Cursor, and other [MCP](https://modelcontextprotocol.io/) clients) dimensionally-verified unit conversion and computation.
 
 ```
 Agent: "Convert 5 mcg/kg/min for an 80 kg patient to mL/h. Drug is 400 mg in 250 mL."
@@ -33,9 +47,7 @@ Agent: "Convert 5 mcg/kg/min for an 80 kg patient to mL/h. Drug is 400 mg in 250
   validate  → result dimension matches expected unit ✓
 ```
 
----
-
-## Installation
+### Installation
 
 ```bash
 pip install ucon-tools[mcp]
@@ -43,13 +55,9 @@ pip install ucon-tools[mcp]
 
 Requires Python 3.10+.
 
----
+### Configuration
 
-## Quick Start
-
-### Claude Desktop / Claude Code
-
-Add to your MCP configuration:
+**Claude Desktop / Claude Code** — add to your MCP configuration:
 
 ```json
 {
@@ -62,18 +70,16 @@ Add to your MCP configuration:
 }
 ```
 
-### Standalone
+**Standalone:**
 
 ```bash
 ucon-mcp                    # stdio transport (default)
 ucon-mcp --transport sse    # SSE transport for remote clients
 ```
 
----
+### Tools
 
-## MCP Tools
-
-### Core
+**Core** — conversion and computation:
 
 | Tool | Description |
 |------|-------------|
@@ -82,7 +88,7 @@ ucon-mcp --transport sse    # SSE transport for remote clients
 | `decompose` | Build a factor chain from natural-language or structured input |
 | `check_dimensions` | Check if two units share the same dimension |
 
-### Discovery
+**Discovery** — explore the unit system:
 
 | Tool | Description |
 |------|-------------|
@@ -92,7 +98,7 @@ ucon-mcp --transport sse    # SSE transport for remote clients
 | `list_constants` | List physical constants (CODATA 2022) |
 | `list_formulas` | List registered domain formulas |
 
-### Runtime Extension
+**Runtime extension** — add units and conversions per session:
 
 | Tool | Description |
 |------|-------------|
@@ -102,11 +108,11 @@ ucon-mcp --transport sse    # SSE transport for remote clients
 | `call_formula` | Call a registered dimensionally-typed formula |
 | `reset_session` | Clear all session-defined units, conversions, and constants |
 
-### Kind-of-Quantity (KOQ)
+**Kind-of-Quantity (KOQ)** — semantic disambiguation:
 
 | Tool | Description |
 |------|-------------|
-| `define_quantity_kind` | Register a quantity kind for semantic disambiguation |
+| `define_quantity_kind` | Register a quantity kind for disambiguation |
 | `declare_computation` | Declare expected quantity kind before computing |
 | `validate_result` | Validate that a result matches the declared kind |
 | `list_quantity_kinds` | List registered quantity kinds |
@@ -115,27 +121,35 @@ ucon-mcp --transport sse    # SSE transport for remote clients
 
 ---
 
-## Relationship to ucon
+## Architecture
 
-`ucon` is the core library — it defines units, dimensions, scales, and the conversion graph.
-
-`ucon-tools` is the interface layer — it wraps `ucon` in an MCP server so agents can use it. It also adds agent-specific capabilities that don't belong in the core library: the `decompose` constraint solver, session state management, fuzzy error suggestions, and KOQ disambiguation.
+`ucon-tools` is an interface layer. It does not reimplement dimensional analysis — it delegates to `ucon` for all unit resolution, conversion, and dimensional algebra. What it adds is interface-specific logic: session state, protocol handling, error suggestions, and agent-oriented features like the `decompose` constraint solver and KOQ disambiguation.
 
 ```
-┌─────────────────────────────────────────┐
-│              MCP Client                 │
-│     (Claude, Cursor, etc.)              │
-└────────────────┬────────────────────────┘
-                 │ MCP protocol
-┌────────────────▼────────────────────────┐
-│            ucon-tools                   │
-│  MCP server, decompose, KOQ, sessions   │
-└────────────────┬────────────────────────┘
-                 │ Python imports
-┌────────────────▼────────────────────────┐
-│               ucon                      │
-│  Units, dimensions, ConversionGraph     │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│                     Clients                           │
+│   MCP (Claude, Cursor)  ·  HTTP  ·  Terminal          │
+└──────────┬──────────────────┬──────────────┬──────────┘
+           │                  │              │
+┌──────────▼───┐   ┌──────────▼───┐  ┌───────▼──────┐
+│ ucon.tools   │   │ ucon.tools   │  │ ucon.tools   │
+│     .mcp     │   │     .rest    │  │     .cli     │
+│              │   │              │  │              │
+│  sessions    │   │  (planned)   │  │  (planned)   │
+│  decompose   │   │              │  │              │
+│  KOQ         │   │              │  │              │
+│  suggestions │   │              │  │              │
+└──────┬───────┘   └──────┬───────┘  └──────┬───────┘
+       │                  │                 │
+       └──────────────────┼─────────────────┘
+                          │ Python imports
+               ┌──────────▼──────────┐
+               │        ucon         │
+               │                     │
+               │  Units, Dimensions  │
+               │  ConversionGraph    │
+               │  Scales, Constants  │
+               └─────────────────────┘
 ```
 
 ---
