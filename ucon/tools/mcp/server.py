@@ -1788,15 +1788,11 @@ def _decompose_query_mode(
     src_dim = source_unit.dimension
     dst_dim = target_unit.dimension
 
-    if src_dim != dst_dim:
-        return build_dimension_mismatch_error(
-            from_unit_str=initial_unit_str,
-            to_unit_str=target_str,
-            src_unit=source_unit,
-            dst_unit=target_unit,
-        )
-
     # Build factor chain
+    # Note: we do NOT early-reject on src_dim != dst_dim because the graph
+    # may have cross-system bridge edges (e.g. CGS poise → SI Pa·s) that
+    # connect dimensions with different names but identical physical meaning.
+    # Instead we attempt the graph conversion and let it report errors.
     factors = []
 
     if isinstance(source_unit, UnitProduct) or isinstance(target_unit, UnitProduct):
@@ -1816,7 +1812,14 @@ def _decompose_query_mode(
                     "denominator": _format_unit_for_chain(source_unit),
                 })
 
-        except (DimensionMismatch, ConversionNotFound) as e:
+        except DimensionMismatch:
+            return build_dimension_mismatch_error(
+                from_unit_str=initial_unit_str,
+                to_unit_str=target_str,
+                src_unit=source_unit,
+                dst_unit=target_unit,
+            )
+        except ConversionNotFound as e:
             return build_no_path_error(
                 from_unit_str=initial_unit_str,
                 to_unit_str=target_str,
@@ -1828,9 +1831,22 @@ def _decompose_query_mode(
         path = _find_conversion_path(graph, source_unit, target_unit)
 
         if path is None:
+            # No BFS path found — try graph.convert() which may use bridge edges
             try:
                 with using_graph(graph):
-                    graph.convert(src=source_unit, dst=target_unit)
+                    conv_map = graph.convert(src=source_unit, dst=target_unit)
+
+                if hasattr(conv_map, 'a'):
+                    total_factor = float(conv_map.a)
+                else:
+                    total_factor = 1.0
+
+                if abs(total_factor - 1.0) > 1e-12:
+                    factors.append({
+                        "value": total_factor,
+                        "numerator": _format_unit_for_chain(target_unit),
+                        "denominator": _format_unit_for_chain(source_unit),
+                    })
             except ConversionNotFound as e:
                 return build_no_path_error(
                     from_unit_str=initial_unit_str,
@@ -1846,13 +1862,13 @@ def _decompose_query_mode(
                     src_unit=source_unit,
                     dst_unit=target_unit,
                 )
-
-        for from_unit, to_unit, factor in path:
-            factors.append({
-                "value": factor,
-                "numerator": _format_unit_for_chain(to_unit),
-                "denominator": _format_unit_for_chain(from_unit),
-            })
+        else:
+            for from_unit, to_unit, factor in path:
+                factors.append({
+                    "value": factor,
+                    "numerator": _format_unit_for_chain(to_unit),
+                    "denominator": _format_unit_for_chain(from_unit),
+                })
 
     return DecomposeResult(
         initial_value=initial_value,
