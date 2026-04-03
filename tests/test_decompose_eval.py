@@ -726,17 +726,25 @@ class TestDecomposeStructuredMode(DecomposeEvalBase):
 
     def test_iv_drip_rate(self):
         """1000 mL / 8h with 15 gtt/mL tubing → 31.25 gtt/min"""
-        self.assert_structured_roundtrip(
-            initial_unit="mL",
-            target_unit="gtt/min",
-            known_quantities=[
-                {"value": 8, "unit": "h"},
-                {"value": 15, "unit": "gtt/mL"},
-            ],
-            initial_value=1000,
-            expected_value=31.25,
-            description="Eval 2.2: IV drip rate",
-        )
+        from ucon.tools.mcp.server import define_unit, define_conversion, _reset_fallback_session
+
+        # gtt (drops) is a medical unit not yet in the ucon base registry;
+        # register it as a session unit before running the decompose.
+        define_unit(name="gtt", dimension="count", aliases=["gtt"])
+        try:
+            self.assert_structured_roundtrip(
+                initial_unit="mL",
+                target_unit="gtt/min",
+                known_quantities=[
+                    {"value": 8, "unit": "h"},
+                    {"value": 15, "unit": "gtt/mL"},
+                ],
+                initial_value=1000,
+                expected_value=31.25,
+                description="Eval 2.2: IV drip rate",
+            )
+        finally:
+            _reset_fallback_session()
 
     # -------------------------------------------------------------------------
     # Eval 2.3: Concentration with separate quantities (new)
