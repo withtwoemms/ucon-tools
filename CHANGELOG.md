@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.2] - 2026-04-02
+## [0.3.2] - 2026-04-03
 
 ### Fixed
 
@@ -19,12 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `decompose` structured mode: bare-count diagnostic for dimensionless quantities
   - When `ea` (dimensionless count) is provided but cannot fill a dimensional gap, returns an actionable error suggesting rate forms (e.g., `ea/d`, `ea/h`, `ea/min`)
   - Quantities expressed as rates (e.g., `3 ea/d`) are handled correctly by the constraint solver
-
+- `decompose` query mode: cross-basis conversions (CGS ↔ SI) no longer rejected as dimension mismatches (e.g., `Pa*s → poise`, `dyne → N`, `m²/s → stokes`)
 - Fuzzy unit suggestions crashed on unknown units due to stale `_UNIT_REGISTRY` import path (`ucon.units` → `ucon.resolver`)
+- Inline `slug` test replaced with `smoot` to avoid collision with built-in `slug` unit added in ucon 1.1.x
 
 ### Changed
 
-- Minimum `ucon` dependency bumped from `>=1.0.0` to `>=1.1.1`
+- Minimum `ucon` dependency bumped from `>=1.0.0` to `>=1.1.2`
+- Decompose eval suite expanded: `1 GB to MB`, `1e-9 m to nm`, `1 TiB to GiB` now tested directly (requires ucon 1.1.2 resolver fixes and binary prefix support)
 - Structured mode eval tests added to live server eval script
 
 ## [0.3.1] - 2026-04-01
