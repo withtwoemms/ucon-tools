@@ -20,6 +20,14 @@ Each test verifies:
 import unittest
 import math
 
+try:
+    from ucon.core import Scale
+    _HAS_BINARY_PREFIXES = hasattr(Scale, 'tebi')
+except ImportError:
+    _HAS_BINARY_PREFIXES = False
+
+_NEEDS_112 = unittest.skipUnless(_HAS_BINARY_PREFIXES, "requires ucon >= 1.1.2")
+
 
 class DecomposeEvalBase(unittest.TestCase):
     """Base class for decompose evaluation tests."""
@@ -211,6 +219,7 @@ class TestDecomposeTier2Intermediate(DecomposeEvalBase):
         """1 MHz → 1000000 Hz"""
         self.assert_decompose_roundtrip("1 MHz to Hz", 1e6)
 
+    @_NEEDS_112
     def test_gigabyte_to_megabyte(self):
         """1 GB → 1000 MB"""
         self.assert_decompose_roundtrip("1 GB to MB", 1000.0)
@@ -404,6 +413,7 @@ class TestDecomposeTier3Advanced(DecomposeEvalBase):
         # Identity conversion test
         self.assert_decompose_roundtrip("6.022e23 mol to mol", 6.022e23)
 
+    @_NEEDS_112
     def test_scientific_notation_conversion(self):
         """1e-9 m → 1 nm"""
         self.assert_decompose_roundtrip("1e-9 m to nm", 1.0)
@@ -498,6 +508,7 @@ class TestDecomposeTier4Expert(DecomposeEvalBase):
         # 10^12 / 2^30 = 931.322...
         self.assert_decompose_roundtrip("1 TB to GiB", 931.322, tolerance=0.01)
 
+    @_NEEDS_112
     def test_tebibyte_to_gibibyte(self):
         """1 TiB → 1024 GiB"""
         self.assert_decompose_roundtrip("1 TiB to GiB", 1024.0)
