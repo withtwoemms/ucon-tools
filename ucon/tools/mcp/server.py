@@ -568,7 +568,7 @@ def list_scales() -> list[ScaleInfo]:
     For example, prefix "k" (kilo) with unit "m" (meter) forms "km".
 
     Includes both SI decimal prefixes (kilo, mega, milli, micro, etc.)
-    and binary prefixes (kibi, mebi, gibi) for information units.
+    and binary prefixes (kibi, mebi, gibi, tebi, pebi, exbi) for information units.
 
     Note on bytes:
     - SI prefixes: kB = 1000 B, MB = 1,000,000 B (decimal)

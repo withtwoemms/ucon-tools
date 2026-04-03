@@ -1795,13 +1795,13 @@ class TestAffineConversion(unittest.TestCase):
 
     def test_define_conversion_offset_default_zero(self):
         """Test that omitting offset defaults to linear (offset=0)."""
-        self.define_unit(name="slug", dimension="mass", aliases=["slug"])
-        result = self.define_conversion(src="slug", dst="kg", factor=14.5939)
+        self.define_unit(name="smoot", dimension="length", aliases=["smoot"])
+        result = self.define_conversion(src="smoot", dst="m", factor=1.7018)
         self.assertIsInstance(result, self.ConversionDefinitionResult)
         self.assertTrue(result.success)
         self.assertAlmostEqual(result.offset, 0.0)
 
         # Verify linear behavior
-        result = self.convert(1, "slug", "kg")
+        result = self.convert(1, "smoot", "m")
         self.assertNotIsInstance(result, self.ConversionError)
-        self.assertAlmostEqual(result.quantity, 14.5939, places=3)
+        self.assertAlmostEqual(result.quantity, 1.7018, places=3)

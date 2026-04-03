@@ -498,10 +498,9 @@ class TestDecomposeTier4Expert(DecomposeEvalBase):
         # 10^12 / 2^30 = 931.322...
         self.assert_decompose_roundtrip("1 TB to GiB", 931.322, tolerance=0.01)
 
-    def test_gigabyte_to_gibibyte(self):
-        """1 GB → 0.931 GiB"""
-        # 10^9 / 2^30 = 0.931323...
-        self.assert_decompose_roundtrip("1 GB to GiB", 0.9313, tolerance=0.01)
+    def test_tebibyte_to_gibibyte(self):
+        """1 TiB → 1024 GiB"""
+        self.assert_decompose_roundtrip("1 TiB to GiB", 1024.0)
 
     def test_bytes_to_bits(self):
         """1 byte → 8 bit"""
