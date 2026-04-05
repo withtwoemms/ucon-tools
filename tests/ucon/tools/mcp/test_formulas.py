@@ -13,15 +13,18 @@ from ucon.tools.mcp.formulas import (
     get_formula,
     clear_formulas,
 )
+from ucon.tools.mcp.formulas._registry import _FORMULA_REGISTRY
 from ucon.tools.mcp.schema import extract_dimension_constraints
 
 
 @pytest.fixture(autouse=True)
 def clean_registry():
-    """Clear formula registry before and after each test."""
+    """Save built-in formulas, clear for isolated test, then restore."""
+    saved = dict(_FORMULA_REGISTRY)
     clear_formulas()
     yield
     clear_formulas()
+    _FORMULA_REGISTRY.update(saved)
 
 
 # -----------------------------------------------------------------------------
