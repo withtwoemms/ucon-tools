@@ -22,7 +22,7 @@ def availability(
 
 @register_formula(
     "error_budget_remaining",
-    description="Remaining error budget fraction (1 - error_rate - (1 - SLO))",
+    description="Remaining error budget fraction: 1 - (error_rate / allowed_error_rate)",
 )
 @enforce_dimensions
 def error_budget_remaining(
@@ -33,7 +33,9 @@ def error_budget_remaining(
     e = errors.quantity
     t = total_requests.quantity
     s = slo.quantity
-    result = 1 - (e / t) - (1 - s)
+    error_rate = e / t
+    allowed_error_rate = 1 - s
+    result = 1 - (error_rate / allowed_error_rate)
     return Number(result)
 
 

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-04-05
+
+### Fixed
+
+- `bmi` formula now normalizes inputs to kg/m before computing, producing correct kg/m² results regardless of input units (cm, inches, lb, etc.)
+- `reynolds_number` formula no longer produces 1000× error when density is provided in `kg/m³`; inputs are normalized to coherent SI units before computing the dimensionless result
+- `fib4` formula accepts dimensionless AST/ALT values (removes `Dimension.frequency` constraint that rejected clinical `U/L` units)
+- `error_budget_remaining` formula reimplemented using standard SRE formulation: `1 - (error_rate / allowed_error_rate)` instead of `SLO - error_rate`
+
+### Notes
+
+- BMI and Reynolds number fixes follow the same normalization pattern already used by BSA, CrCl, and Tsiolkovsky — extract to canonical units via `.to()` before applying the formula
+- The Reynolds number root cause is a scale prefix asymmetry in `Number` algebra when mixing prefix-decomposed units (`kg` = kilo × gram) with opaque derived units (`Pa`); normalizing to floats before computing avoids the issue at the formula layer
+- FIB-4's AST/ALT parameters are now unconstrained (`Number`) like platelets, matching clinical usage where enzyme activity values are passed as raw numeric U/L counts
+
 ## [0.4.0] - 2026-04-05
 
 ### Added
@@ -139,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[0.4.1]: https://github.com/withtwoemms/ucon-tools/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/withtwoemms/ucon-tools/compare/0.3.2...0.4.0
 [0.3.2]: https://github.com/withtwoemms/ucon-tools/compare/0.3.1...0.3.2
 [0.3.1]: https://github.com/withtwoemms/ucon-tools/compare/0.3.0...0.3.1
