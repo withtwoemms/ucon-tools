@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-05
+
+### Added
+
+- 30 built-in domain formulas across 6 domains, registered at server startup and immediately available via `list_formulas` / `call_formula`:
+  - **Medical** (5): `bmi`, `bsa` (Du Bois), `creatinine_clearance` (Cockcroft-Gault), `fib4`, `mean_arterial_pressure`
+  - **Engineering** (5): `reynolds_number`, `ohms_law_power`, `stress`, `darcy_weisbach`, `kinetic_energy`
+  - **Chemistry** (5): `ideal_gas_pressure`, `molarity`, `dilution`, `moles_from_mass`, `gibbs_free_energy`
+  - **Physics** (5): `gravitational_force`, `photon_energy`, `coulombs_law`, `projectile_range`, `schwarzschild_radius`
+  - **SRE** (5): `availability`, `error_budget_remaining`, `mtbf`, `mttr`, `throughput`
+  - **Aerospace** (5): `orbital_velocity`, `escape_velocity`, `orbital_period`, `tsiolkovsky_delta_v`, `thrust`
+
+### Changed
+
+- Formula registry restructured from single module (`formulas.py`) to package (`formulas/`)
+  - `formulas/_registry.py` — registry internals
+  - `formulas/{medical,engineering,chemistry,physics,sre,aerospace}.py` — domain modules
+  - `formulas/__init__.py` — re-exports public API and triggers domain registration on import
+  - Backward compatible: `from ucon.tools.mcp.formulas import register_formula` unchanged
+
+### Notes
+
+- Formulas exercise 24 dimensions as inputs or outputs: mass, length, time, temperature, pressure, velocity, density, dynamic_viscosity, force, area, volume, energy, power, voltage, resistance, frequency, charge, amount_of_substance, concentration, molar_mass, entropy, angle, information, and dimensionless
+- Empirical formulas (BSA, Cockcroft-Gault, FIB-4, Tsiolkovsky) normalize inputs to canonical units before applying coefficients
+- Physics and aerospace formulas consume CODATA 2022 constants (`G`, `h`, `c`, `ε₀`) from `ucon.constants`; uncertainty propagates to results automatically
+
 ## [0.3.2] - 2026-04-03
 
 ### Fixed
@@ -113,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[0.4.0]: https://github.com/withtwoemms/ucon-tools/compare/0.3.2...0.4.0
 [0.3.2]: https://github.com/withtwoemms/ucon-tools/compare/0.3.1...0.3.2
 [0.3.1]: https://github.com/withtwoemms/ucon-tools/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/withtwoemms/ucon-tools/compare/0.2.1...0.3.0
