@@ -17,7 +17,9 @@ def bmi(
     mass: Number[Dimension.mass],
     height: Number[Dimension.length],
 ) -> Number:
-    return mass / (height ** 2)
+    mass_kg = mass.to(units.kilogram).quantity
+    height_m = height.to(units.meter).quantity
+    return Number(mass_kg / (height_m ** 2), units.kilogram / units.meter ** 2)
 
 
 @register_formula("bsa", description="Body Surface Area (Du Bois formula)")
@@ -57,15 +59,15 @@ def creatinine_clearance(
 @enforce_dimensions
 def fib4(
     age: Number[Dimension.time],
-    ast: Number[Dimension.frequency],
-    alt: Number[Dimension.frequency],
+    ast: Number,
+    alt: Number,
     platelets: Number,
 ) -> Number:
     age_yr = age.to(units.year).quantity
-    ast_uL = ast.to(units.hertz).quantity
-    alt_uL = alt.to(units.hertz).quantity
+    ast_val = ast.quantity
+    alt_val = alt.quantity
     plt = platelets.quantity
-    result = (age_yr * ast_uL) / (plt * (alt_uL ** 0.5))
+    result = (age_yr * ast_val) / (plt * (alt_val ** 0.5))
     return Number(result)
 
 

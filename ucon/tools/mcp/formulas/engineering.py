@@ -5,7 +5,12 @@
 
 from ucon import Dimension, Number, enforce_dimensions
 from ucon import units
+from ucon.units import get_unit_by_name
 from ucon.tools.mcp.formulas._registry import register_formula
+
+_kg_per_m3 = units.kilogram / units.meter ** 3
+_m_per_s = units.meter / units.second
+_Pa_s = get_unit_by_name('Pa') * units.second
 
 
 @register_formula(
@@ -19,7 +24,11 @@ def reynolds_number(
     characteristic_length: Number[Dimension.length],
     dynamic_viscosity: Number[Dimension.dynamic_viscosity],
 ) -> Number:
-    return density * velocity * characteristic_length / dynamic_viscosity
+    rho = density.to(_kg_per_m3).quantity
+    v = velocity.to(_m_per_s).quantity
+    L = characteristic_length.to(units.meter).quantity
+    mu = dynamic_viscosity.to(_Pa_s).quantity
+    return Number(rho * v * L / mu)
 
 
 @register_formula(

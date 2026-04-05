@@ -79,6 +79,24 @@ class TestBMI:
         assert isinstance(result, FormulaResult)
         assert result.quantity == pytest.approx(22.857, rel=1e-3)
 
+    def test_normalizes_height_in_cm(self):
+        """BMI normalizes inputs — height in cm produces same result as meters."""
+        result = call_formula("bmi", {
+            "mass": {"value": 82, "unit": "kg"},
+            "height": {"value": 178, "unit": "cm"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(25.88, rel=1e-2)
+
+    def test_normalizes_imperial_inputs(self):
+        """BMI normalizes inputs — lb and inches produce correct kg/m² result."""
+        result = call_formula("bmi", {
+            "mass": {"value": 180, "unit": "lb"},
+            "height": {"value": 70, "unit": "in"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(25.82, rel=1e-2)
+
     def test_dimension_mismatch(self):
         result = call_formula("bmi", {
             "mass": {"value": 70, "unit": "m"},
@@ -134,12 +152,24 @@ class TestFIB4:
     def test_correctness(self):
         result = call_formula("fib4", {
             "age": {"value": 50, "unit": "yr"},
-            "ast": {"value": 35, "unit": "Hz"},
-            "alt": {"value": 25, "unit": "Hz"},
+            "ast": {"value": 35},
+            "alt": {"value": 25},
             "platelets": {"value": 200},
         })
         assert isinstance(result, FormulaResult)
         expected = (50 * 35) / (200 * math.sqrt(25))
+        assert result.quantity == pytest.approx(expected, rel=1e-3)
+
+    def test_accepts_dimensionless_ast_alt(self):
+        """AST/ALT are unconstrained — clinical U/L values pass without Hz workaround."""
+        result = call_formula("fib4", {
+            "age": {"value": 55, "unit": "yr"},
+            "ast": {"value": 60},
+            "alt": {"value": 45},
+            "platelets": {"value": 150},
+        })
+        assert isinstance(result, FormulaResult)
+        expected = (55 * 60) / (150 * math.sqrt(45))
         assert result.quantity == pytest.approx(expected, rel=1e-3)
 
 
@@ -168,9 +198,19 @@ class TestReynoldsNumber:
             "dynamic_viscosity": {"value": 0.001, "unit": "Pa*s"},
         })
         assert isinstance(result, FormulaResult)
-        # Scale factor note: kg carries kilo scale (1000), so 1000 kg/m^3
-        # in base-gram arithmetic yields 1e6 g/m^3 internally, producing 1e8.
-        assert result.quantity == pytest.approx(1e8, rel=1e-3)
+        # Re = 1000 * 2 * 0.05 / 0.001 = 100,000
+        assert result.quantity == pytest.approx(1e5, rel=1e-3)
+
+    def test_unit_one_inputs(self):
+        """All inputs = 1 in base SI → Re = 1."""
+        result = call_formula("reynolds_number", {
+            "density": {"value": 1, "unit": "kg/m^3"},
+            "velocity": {"value": 1, "unit": "m/s"},
+            "characteristic_length": {"value": 1, "unit": "m"},
+            "dynamic_viscosity": {"value": 1, "unit": "Pa*s"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(1.0, rel=1e-3)
 
 
 class TestOhmsLawPower:
@@ -378,15 +418,36 @@ class TestAvailability:
 
 class TestErrorBudgetRemaining:
     def test_correctness(self):
-        # SLO = 0.999, 10 errors out of 100000 requests
+        # SLO = 0.999, 50 errors out of 100000 requests
+        # error_rate = 0.0005, allowed = 0.001, consumed = 0.5, remaining = 0.5
         result = call_formula("error_budget_remaining", {
-            "errors": {"value": 10},
+            "errors": {"value": 50},
             "total_requests": {"value": 100000},
             "slo": {"value": 0.999},
         })
         assert isinstance(result, FormulaResult)
-        expected = 1 - (10 / 100000) - (1 - 0.999)
+        expected = 1 - ((50 / 100000) / (1 - 0.999))  # 0.5
         assert result.quantity == pytest.approx(expected, rel=1e-5)
+
+    def test_fully_consumed(self):
+        """Error rate equals allowed error rate → 0 remaining."""
+        result = call_formula("error_budget_remaining", {
+            "errors": {"value": 100},
+            "total_requests": {"value": 100000},
+            "slo": {"value": 0.999},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(0.0, abs=1e-10)
+
+    def test_no_errors(self):
+        """Zero errors → 100% budget remaining."""
+        result = call_formula("error_budget_remaining", {
+            "errors": {"value": 0},
+            "total_requests": {"value": 100000},
+            "slo": {"value": 0.999},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(1.0, rel=1e-5)
 
 
 class TestMTBF:
