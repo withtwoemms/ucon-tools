@@ -21,7 +21,7 @@ class TestListConstants:
         from ucon.tools.mcp.server import list_constants
         result = list_constants()
         assert isinstance(result, list)
-        assert len(result) >= 17  # Built-in constants
+        assert len(result) >= 26  # Built-in constants
 
     def test_filter_exact(self):
         from ucon.tools.mcp.server import list_constants
@@ -30,7 +30,7 @@ class TestListConstants:
         for const in result:
             assert const.is_exact
             assert const.category == "exact"
-        assert len(result) == 7
+        assert len(result) == 8
 
     def test_filter_derived(self):
         from ucon.tools.mcp.server import list_constants
@@ -47,7 +47,7 @@ class TestListConstants:
         for const in result:
             assert not const.is_exact
             assert const.category == "measured"
-        assert len(result) == 7
+        assert len(result) == 15
 
     def test_filter_session_empty_initially(self):
         from ucon.tools.mcp.server import list_constants, reset_session
@@ -250,7 +250,7 @@ class TestConstantsCategoryCounts:
         derived = list_constants(category="derived")
         measured = list_constants(category="measured")
         total = len(exact) + len(derived) + len(measured)
-        assert total == 17
+        assert total == 26
 
     def test_exact_constants_are_exact(self):
         from ucon.tools.mcp.server import list_constants
