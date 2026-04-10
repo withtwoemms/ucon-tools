@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-04-10
+
+### Changed
+
+- Minimum `ucon` dependency bumped from `>=1.1.2` to `>=1.5.0a1`
+  - Required for 9 new physical constants added in ucon 1.5.0: `gₙ` (exact),
+    `Eₕ`, `Ry`, `a₀`, `ℏ/Eₕ`, `mP`, `lP`, `tP`, `TP` (measured, CODATA 2022)
+- Constant count assertions updated to reflect expanded constant catalog
+  (8 exact, 3 derived, 15 measured = 26 total; was 7/3/7 = 17)
+
 ## [0.4.1] - 2026-04-05
 
 ### Fixed
@@ -154,6 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[0.4.2]: https://github.com/withtwoemms/ucon-tools/compare/0.4.1...0.4.2
 [0.4.1]: https://github.com/withtwoemms/ucon-tools/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/withtwoemms/ucon-tools/compare/0.3.2...0.4.0
 [0.3.2]: https://github.com/withtwoemms/ucon-tools/compare/0.3.1...0.3.2
