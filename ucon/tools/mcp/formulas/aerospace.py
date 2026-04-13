@@ -7,10 +7,11 @@ import math
 
 from ucon import Dimension, Number, enforce_dimensions
 from ucon import units
-from ucon.constants import gravitational_constant
+from ucon.constants import gravitational_constant, standard_gravity
 from ucon.tools.mcp.formulas._registry import register_formula
 
 G = gravitational_constant.as_number()
+g0 = standard_gravity.as_number()
 
 
 @register_formula(
@@ -59,7 +60,6 @@ def tsiolkovsky_delta_v(
     wet_mass: Number[Dimension.mass],
     dry_mass: Number[Dimension.mass],
 ) -> Number:
-    g0 = Number(9.80665, units.meter / units.second ** 2)
     m0 = wet_mass.to(units.kilogram).quantity
     mf = dry_mass.to(units.kilogram).quantity
     return specific_impulse * g0 * math.log(m0 / mf)

@@ -11,6 +11,7 @@ from ucon.constants import (
     gravitational_constant,
     planck_constant,
     speed_of_light,
+    standard_gravity,
     vacuum_permittivity,
 )
 from ucon.tools.mcp.formulas._registry import register_formula
@@ -19,6 +20,7 @@ G = gravitational_constant.as_number()
 h = planck_constant.as_number()
 c = speed_of_light.as_number()
 eps0 = vacuum_permittivity.as_number()
+g0 = standard_gravity.as_number()
 
 
 @register_formula(
@@ -67,9 +69,8 @@ def projectile_range(
     initial_velocity: Number[Dimension.velocity],
     launch_angle: Number[Dimension.angle],
 ) -> Number:
-    g = Number(9.80665, units.meter / units.second ** 2)
     angle_rad = launch_angle.to(units.radian).quantity
-    return (initial_velocity ** 2) * math.sin(2 * angle_rad) / g
+    return (initial_velocity ** 2) * math.sin(2 * angle_rad) / g0
 
 
 @register_formula(

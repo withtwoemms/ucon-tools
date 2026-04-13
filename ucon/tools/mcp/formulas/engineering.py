@@ -5,12 +5,14 @@
 
 from ucon import Dimension, Number, enforce_dimensions
 from ucon import units
+from ucon.constants import standard_gravity
 from ucon.units import get_unit_by_name
 from ucon.tools.mcp.formulas._registry import register_formula
 
 _kg_per_m3 = units.kilogram / units.meter ** 3
 _m_per_s = units.meter / units.second
 _Pa_s = get_unit_by_name('Pa') * units.second
+g0 = standard_gravity.as_number()
 
 
 @register_formula(
@@ -63,8 +65,7 @@ def darcy_weisbach(
     pipe_diameter: Number[Dimension.length],
     flow_velocity: Number[Dimension.velocity],
 ) -> Number:
-    g = Number(9.80665, units.meter / units.second ** 2)
-    return friction_factor * (pipe_length / pipe_diameter) * (flow_velocity ** 2) / (Number(2) * g)
+    return friction_factor * (pipe_length / pipe_diameter) * (flow_velocity ** 2) / (Number(2) * g0)
 
 
 @register_formula(

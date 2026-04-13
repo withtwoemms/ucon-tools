@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-04-13
+
+### Changed
+
+- Minimum `ucon` dependency bumped from `>=1.5.0a1` to `>=1.6.0`
+- Three formulas now consume `standard_gravity` (`gₙ`, exact) from
+  `ucon.constants` instead of hardcoding `9.80665 m/s²`:
+  - **Engineering**: `darcy_weisbach`
+  - **Physics**: `projectile_range`
+  - **Aerospace**: `tsiolkovsky_delta_v`
+  - Numerically identical — `gₙ` is defined exact at 9.80665 m/s²
+  - Aligns with the pattern used by other formulas that consume CODATA constants
+    (`G`, `h`, `c`, `ε₀`)
+
 ## [0.4.2] - 2026-04-10
 
 ### Changed
@@ -164,6 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[0.4.3]: https://github.com/withtwoemms/ucon-tools/compare/0.4.2...0.4.3
 [0.4.2]: https://github.com/withtwoemms/ucon-tools/compare/0.4.1...0.4.2
 [0.4.1]: https://github.com/withtwoemms/ucon-tools/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/withtwoemms/ucon-tools/compare/0.3.2...0.4.0
