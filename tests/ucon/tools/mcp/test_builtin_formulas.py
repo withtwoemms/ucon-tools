@@ -245,6 +245,18 @@ class TestDarcyWeisbach:
         expected = 0.02 * (100 / 0.1) * (2 ** 2) / (2 * 9.80665)
         assert result.quantity == pytest.approx(expected, rel=1e-3)
 
+    def test_normalizes_non_base_units(self):
+        """Pipe length in km and velocity in km/h produce correct result."""
+        result = call_formula("darcy_weisbach", {
+            "friction_factor": {"value": 0.02},
+            "pipe_length": {"value": 0.1, "unit": "km"},
+            "pipe_diameter": {"value": 0.1, "unit": "m"},
+            "flow_velocity": {"value": 7.2, "unit": "km/h"},
+        })
+        assert isinstance(result, FormulaResult)
+        expected = 0.02 * (100 / 0.1) * (2 ** 2) / (2 * 9.80665)
+        assert result.quantity == pytest.approx(expected, rel=1e-2)
+
 
 class TestKineticEnergy:
     def test_correctness(self):
@@ -275,6 +287,16 @@ class TestIdealGasPressure:
             "amount": {"value": 1, "unit": "mol"},
             "temperature": {"value": 273.15, "unit": "K"},
             "volume": {"value": 0.02241, "unit": "m^3"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(101325, rel=1e-2)
+
+    def test_normalizes_cm3_volume(self):
+        """Volume in cm^3 produces same result as m^3."""
+        result = call_formula("ideal_gas_pressure", {
+            "amount": {"value": 1, "unit": "mol"},
+            "temperature": {"value": 273.15, "unit": "K"},
+            "volume": {"value": 22410, "unit": "cm^3"},
         })
         assert isinstance(result, FormulaResult)
         assert result.quantity == pytest.approx(101325, rel=1e-2)
@@ -325,6 +347,17 @@ class TestGibbsFreeEnergy:
         expected = -285800 - 298.15 * (-163.15)
         assert result.quantity == pytest.approx(expected, rel=1e-3)
 
+    def test_normalizes_kj_enthalpy(self):
+        """Enthalpy in kJ with entropy in J/K produces correct result."""
+        result = call_formula("gibbs_free_energy", {
+            "enthalpy": {"value": -285.8, "unit": "kJ"},
+            "temperature": {"value": 298.15, "unit": "K"},
+            "entropy": {"value": -163.3, "unit": "J/K"},
+        })
+        assert isinstance(result, FormulaResult)
+        expected = -285800 - 298.15 * (-163.3)
+        assert result.quantity == pytest.approx(expected, rel=1e-2)
+
 
 # ---------------------------------------------------------------------------
 # Physics Formulas
@@ -338,6 +371,18 @@ class TestGravitationalForce:
             "mass1": {"value": 5.972e24, "unit": "kg"},
             "mass2": {"value": 7.342e22, "unit": "kg"},
             "distance": {"value": 3.844e8, "unit": "m"},
+        })
+        assert isinstance(result, FormulaResult)
+        G = 6.6743e-11
+        expected = G * 5.972e24 * 7.342e22 / (3.844e8) ** 2
+        assert result.quantity == pytest.approx(expected, rel=1e-3)
+
+    def test_normalizes_km_distance(self):
+        """Distance in km produces same result as meters."""
+        result = call_formula("gravitational_force", {
+            "mass1": {"value": 5.972e24, "unit": "kg"},
+            "mass2": {"value": 7.342e22, "unit": "kg"},
+            "distance": {"value": 3.844e5, "unit": "km"},
         })
         assert isinstance(result, FormulaResult)
         G = 6.6743e-11
@@ -368,11 +413,33 @@ class TestCoulombsLaw:
         expected = (1e-6 * 1e-6) / (4 * math.pi * eps0 * 1)
         assert result.quantity == pytest.approx(expected, rel=1e-2)
 
+    def test_normalizes_km_distance(self):
+        """Distance in km produces same result as meters."""
+        result = call_formula("coulombs_law", {
+            "charge1": {"value": 1e-6, "unit": "C"},
+            "charge2": {"value": 1e-6, "unit": "C"},
+            "distance": {"value": 0.001, "unit": "km"},
+        })
+        assert isinstance(result, FormulaResult)
+        eps0 = 8.8541878128e-12
+        expected = (1e-6 * 1e-6) / (4 * math.pi * eps0 * 1)
+        assert result.quantity == pytest.approx(expected, rel=1e-2)
+
 
 class TestProjectileRange:
     def test_correctness_45deg(self):
         result = call_formula("projectile_range", {
             "initial_velocity": {"value": 20, "unit": "m/s"},
+            "launch_angle": {"value": 45, "unit": "deg"},
+        })
+        assert isinstance(result, FormulaResult)
+        expected = (20 ** 2) * math.sin(math.radians(90)) / 9.80665
+        assert result.quantity == pytest.approx(expected, rel=1e-3)
+
+    def test_normalizes_km_per_s(self):
+        """Velocity in km/s produces same result as m/s."""
+        result = call_formula("projectile_range", {
+            "initial_velocity": {"value": 0.02, "unit": "km/s"},
             "launch_angle": {"value": 45, "unit": "deg"},
         })
         assert isinstance(result, FormulaResult)
@@ -494,6 +561,15 @@ class TestOrbitalVelocity:
         assert isinstance(result, FormulaResult)
         assert result.quantity == pytest.approx(7672, rel=1e-3)
 
+    def test_normalizes_km_radius(self):
+        """Radius in km produces same result as meters."""
+        result = call_formula("orbital_velocity", {
+            "body_mass": {"value": 5.972e24, "unit": "kg"},
+            "orbital_radius": {"value": 6771, "unit": "km"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(7672, rel=1e-3)
+
     def test_dimension_mismatch(self):
         result = call_formula("orbital_velocity", {
             "body_mass": {"value": 5.972e24, "unit": "m"},
@@ -514,11 +590,33 @@ class TestEscapeVelocity:
         expected = math.sqrt(2 * G * 5.972e24 / 6.371e6)
         assert result.quantity == pytest.approx(expected, rel=1e-3)
 
+    def test_normalizes_km_radius(self):
+        """Radius in km produces same result as meters."""
+        result = call_formula("escape_velocity", {
+            "body_mass": {"value": 5.972e24, "unit": "kg"},
+            "radius": {"value": 6371, "unit": "km"},
+        })
+        assert isinstance(result, FormulaResult)
+        G = 6.6743e-11
+        expected = math.sqrt(2 * G * 5.972e24 / 6.371e6)
+        assert result.quantity == pytest.approx(expected, rel=1e-3)
+
 
 class TestOrbitalPeriod:
     def test_correctness_iss(self):
         result = call_formula("orbital_period", {
             "semi_major_axis": {"value": 6.771e6, "unit": "m"},
+            "body_mass": {"value": 5.972e24, "unit": "kg"},
+        })
+        assert isinstance(result, FormulaResult)
+        G = 6.6743e-11
+        expected = 2 * math.pi * math.sqrt((6.771e6) ** 3 / (G * 5.972e24))
+        assert result.quantity == pytest.approx(expected, rel=1e-2)
+
+    def test_normalizes_km_axis(self):
+        """Semi-major axis in km produces same result as meters."""
+        result = call_formula("orbital_period", {
+            "semi_major_axis": {"value": 6771, "unit": "km"},
             "body_mass": {"value": 5.972e24, "unit": "kg"},
         })
         assert isinstance(result, FormulaResult)
