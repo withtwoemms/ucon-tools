@@ -8,13 +8,15 @@ ucon's formula system lets you expose dimensionally-typed calculations to AI age
 from ucon import Number, Dimension, enforce_dimensions
 from ucon.tools.mcp.formulas import register_formula
 
-@register_formula("bmi", description="Body Mass Index")
+@register_formula("kinetic_energy", description="Kinetic energy (KE = 0.5*m*v²)")
 @enforce_dimensions
-def bmi(
+def kinetic_energy(
     mass: Number[Dimension.mass],
-    height: Number[Dimension.length],
+    velocity: Number[Dimension.velocity],
 ) -> Number:
-    return mass / (height * height)
+    mass = mass.to_base()
+    velocity = velocity.to_base()
+    return mass * (velocity ** 2) * 0.5
 ```
 
 **Key points:**
@@ -23,6 +25,9 @@ def bmi(
 - `@enforce_dimensions` enables runtime dimension checking
 - `Number[Dimension.X]` declares expected dimensions
 - Dimension constraints are extracted and exposed via `list_formulas()`
+- **Call `.to_base()` on all dimensioned inputs** before computation — this
+  converts to coherent SI base units algebraically, ensuring correctness
+  regardless of the units the caller provides (km, kJ, etc.)
 
 ## Agent Discovery
 
