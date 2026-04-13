@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-04-13
+
+### Fixed
+
+- 12 constant-dependent formulas now call `.to_base()` on all dimensioned
+  inputs before computation, eliminating scale-mismatch bugs when users
+  provide non-base-SI units (km, kJ, cm³, etc.):
+  - **Physics**: `gravitational_force`, `photon_energy`, `coulombs_law`,
+    `projectile_range`, `schwarzschild_radius`
+  - **Aerospace**: `orbital_velocity`, `escape_velocity`, `orbital_period`,
+    `thrust`
+  - **Chemistry**: `ideal_gas_pressure`, `gibbs_free_energy`
+  - **Engineering**: `darcy_weisbach`, `kinetic_energy`
+- `tsiolkovsky_delta_v` normalized from `.to(units.kilogram)` to `.to_base()`
+  for consistency with the new pattern
+
+### Notes
+
+- Root cause: formulas extracted raw magnitudes from user-supplied units and
+  combined them with physical constants defined in SI base units (G in
+  m³/(kg·s²), ε₀ in F/m, etc.). Non-base inputs produced results off by
+  the scale factor raised to the formula's power law.
+- `Number.to_base()` has been available since ucon v1.5.0. It converts
+  algebraically without consulting the ConversionGraph.
+- Pure-ratio formulas (`molarity`, `dilution`, `stress`, `ohms_law_power`,
+  `moles_from_mass`, SRE formulas) are unaffected — scale factors cancel.
+
 ## [0.4.3] - 2026-04-13
 
 ### Changed
@@ -178,6 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[0.4.4]: https://github.com/withtwoemms/ucon-tools/compare/0.4.3...0.4.4
 [0.4.3]: https://github.com/withtwoemms/ucon-tools/compare/0.4.2...0.4.3
 [0.4.2]: https://github.com/withtwoemms/ucon-tools/compare/0.4.1...0.4.2
 [0.4.1]: https://github.com/withtwoemms/ucon-tools/compare/0.4.0...0.4.1
