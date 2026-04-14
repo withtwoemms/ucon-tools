@@ -28,11 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `J/(mol*K)` identity with parenthesized denominator
   - `mg/kg/day` chained division identity
 
-### Notes
+### Changed
 
-- The constant unit integrity tests require `ucon>=1.6.1`, which fixes the
-  TOML parser to use standard left-to-right associativity and restores
-  parentheses on the G, R, and σ constant unit strings.
+- Minimum `ucon` dependency bumped from `>=1.6.0` to `>=1.6.1a1`
+  - Required for left-to-right parser fix and corrected G, R, σ constant
+    unit strings
 
 ## [0.4.4] - 2026-04-13
 
