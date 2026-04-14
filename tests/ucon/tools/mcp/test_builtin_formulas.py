@@ -647,3 +647,49 @@ class TestThrust:
         })
         assert isinstance(result, FormulaResult)
         assert result.quantity == pytest.approx(300000, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Constant Unit Structure
+# ---------------------------------------------------------------------------
+
+
+class TestConstantUnitIntegrity:
+    """Verify that physical constants used in formulas have correct units.
+
+    These tests catch regressions where the TOML parser produces wrong
+    unit decompositions — e.g., if ``m³/(kg·s²)`` is parsed without
+    parentheses as ``m³/kg·s²`` under non-standard associativity,
+    ``s²`` ends up in the numerator instead of the denominator.
+    """
+
+    def _get_factors(self, constant_attr):
+        """Get {unit_name: exponent} dict from a constant's unit."""
+        from ucon.core import UnitProduct
+        const = getattr(__import__("ucon", fromlist=["constants"]).constants,
+                        constant_attr)
+        unit = const.unit
+        if isinstance(unit, UnitProduct):
+            return {uf.unit.name: exp for uf, exp in unit.factors.items()}
+        return {unit.name: 1.0}
+
+    def test_gravitational_constant_unit(self):
+        """G should have unit m³/(kg·s²) = m³·kg⁻¹·s⁻²."""
+        factors = self._get_factors("gravitational_constant")
+        assert factors["meter"] == pytest.approx(3.0)
+        assert factors["kilogram"] == pytest.approx(-1.0)
+        assert factors["second"] == pytest.approx(-2.0)
+
+    def test_molar_gas_constant_unit(self):
+        """R should have unit J/(mol·K) = J·mol⁻¹·K⁻¹."""
+        factors = self._get_factors("molar_gas_constant")
+        assert factors["joule"] == pytest.approx(1.0)
+        assert factors["mole"] == pytest.approx(-1.0)
+        assert factors["kelvin"] == pytest.approx(-1.0)
+
+    def test_stefan_boltzmann_constant_unit(self):
+        """σ should have unit W/(m²·K⁴) = W·m⁻²·K⁻⁴."""
+        factors = self._get_factors("stefan_boltzmann_constant")
+        assert factors["watt"] == pytest.approx(1.0)
+        assert factors["meter"] == pytest.approx(-2.0)
+        assert factors["kelvin"] == pytest.approx(-4.0)

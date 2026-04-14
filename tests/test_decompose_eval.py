@@ -564,6 +564,22 @@ class TestDecomposeTier4Expert(DecomposeEvalBase):
         """5 m -> ft"""
         self.assert_decompose_roundtrip("5 m -> ft", 16.404, tolerance=0.01)
 
+    # -------------------------------------------------------------------------
+    # Left-to-Right Associativity
+    # -------------------------------------------------------------------------
+
+    def test_multiply_after_divide(self):
+        """m/s*kg identity: left-to-right gives m·kg/s, not m/(s·kg)."""
+        self.assert_decompose_roundtrip("1 m/s*kg to m*kg/s", 1.0)
+
+    def test_parenthesized_denominator(self):
+        """J/(mol*K) identity: parentheses group the denominator."""
+        self.assert_decompose_roundtrip("1 J/(mol*K) to J/(mol*K)", 1.0)
+
+    def test_chained_division(self):
+        """mg/kg/day identity: left-to-right = mg·kg⁻¹·day⁻¹."""
+        self.assert_decompose_roundtrip("1 mg/kg/day to mg/kg/day", 1.0)
+
 
 # =============================================================================
 # Tier 5: Error Handling

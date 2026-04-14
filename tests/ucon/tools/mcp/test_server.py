@@ -73,6 +73,66 @@ class TestConvertTool(unittest.TestCase):
         self.assertIsNone(result.uncertainty)
 
 
+class TestConvertLeftToRightAssociativity(unittest.TestCase):
+    """Test that unit expression parsing uses left-to-right associativity.
+
+    Standard order of operations: ``*`` and ``/`` have equal precedence
+    and associate left-to-right.  ``a/b*c`` parses as ``(a/b)*c``, NOT
+    ``a/(b*c)``.  Multi-term denominators require explicit parentheses.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from ucon.tools.mcp.server import convert, ConversionResult
+            from ucon.tools.mcp.suggestions import ConversionError
+            cls.convert = staticmethod(convert)
+            cls.ConversionResult = ConversionResult
+            cls.ConversionError = ConversionError
+            cls.skip_tests = False
+        except ImportError:
+            cls.skip_tests = True
+
+    def setUp(self):
+        if self.skip_tests:
+            self.skipTest("mcp not installed")
+
+    def test_multiply_after_divide_is_numerator(self):
+        """m/s*kg parses as (m/s)*kg = m·kg/s, not m/(s·kg)."""
+        # m·kg/s has dimension length·mass/time — same as N·s (impulse)
+        # m/(s·kg) has dimension length/(time·mass)
+        # Converting between identical expressions must return 1.0
+        result = self.convert(1, "m/s*kg", "m*kg/s")
+        self.assertIsInstance(result, self.ConversionResult)
+        self.assertAlmostEqual(result.quantity, 1.0)
+
+    def test_parenthesized_denominator_differs(self):
+        """m/(s*kg) differs from m/s*kg."""
+        # m/(s*kg) = m·s⁻¹·kg⁻¹
+        # m/s*kg   = m·s⁻¹·kg¹
+        # These have different dimensions, so conversion should fail
+        result = self.convert(1, "m/s*kg", "m/(s*kg)")
+        self.assertIsInstance(result, self.ConversionError)
+
+    def test_chained_division_left_to_right(self):
+        """mg/kg/day parses as (mg/kg)/day = mg·kg⁻¹·day⁻¹."""
+        # Both sides should parse identically
+        result = self.convert(1, "mg/kg/day", "mg/kg/day")
+        self.assertIsInstance(result, self.ConversionResult)
+        self.assertAlmostEqual(result.quantity, 1.0)
+
+    def test_parenthesized_multi_term_denominator(self):
+        """J/(mol*K) parses correctly with grouped denominator."""
+        result = self.convert(1, "J/(mol*K)", "J/(mol*K)")
+        self.assertIsInstance(result, self.ConversionResult)
+        self.assertAlmostEqual(result.quantity, 1.0)
+
+    def test_unparenthesized_vs_parenthesized(self):
+        """J/mol*K (= J·K/mol) differs from J/(mol*K) (= J·mol⁻¹·K⁻¹)."""
+        result = self.convert(1, "J/mol*K", "J/(mol*K)")
+        self.assertIsInstance(result, self.ConversionError)
+
+
 class TestConvertToolErrors(unittest.TestCase):
     """Test error handling in the convert tool."""
 
