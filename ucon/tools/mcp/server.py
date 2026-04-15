@@ -2443,6 +2443,51 @@ def _number_dimension(num: Number) -> Dimension:
     return Dimension.dimensionless
 
 
+def _simplify_formula_unit(result: Number) -> Number:
+    """Try to express a compound UnitProduct result as a named Unit.
+
+    If the result's unit is a multi-factor UnitProduct (e.g. kg·m/s²)
+    and a named Unit with the same dimension exists (e.g. newton),
+    convert to it — but only when the conversion factor is exactly 1.0.
+
+    Returns the original Number unchanged if no simplification applies.
+    """
+    unit = result.unit
+    if unit is None or isinstance(unit, Unit):
+        return result
+    if not isinstance(unit, UnitProduct) or len(unit.factors) <= 1:
+        return result
+
+    dim = unit.dimension
+    graph = get_default_graph()
+
+    # Find named units with matching dimension and identity conversion
+    candidates = []
+    seen = set()
+    for registered_unit in graph._name_registry_cs.values():
+        if not isinstance(registered_unit, Unit):
+            continue
+        if registered_unit.name in seen:
+            continue
+        seen.add(registered_unit.name)
+        if registered_unit.dimension != dim:
+            continue
+        target = UnitProduct.from_unit(registered_unit)
+        try:
+            m = graph.convert(src=unit, dst=target)
+        except (ConversionNotFound, DimensionMismatch):
+            continue
+        if isinstance(m, LinearMap) and m.a == 1.0:
+            candidates.append(registered_unit)
+
+    if not candidates:
+        return result
+
+    # Prefer the unit with the shortest shorthand (e.g. W over VA, N over dyn)
+    best = min(candidates, key=lambda u: len(u.shorthand))
+    return Number(result.quantity, best, uncertainty=result.uncertainty)
+
+
 @mcp.tool()
 def call_formula(
     name: str,
@@ -2589,6 +2634,7 @@ def call_formula(
 
     # Format the result
     if isinstance(result, Number):
+        result = _simplify_formula_unit(result)
         unit_str = None
         if result.unit is not None:
             unit_str = result.unit.shorthand

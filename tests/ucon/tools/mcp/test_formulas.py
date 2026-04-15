@@ -372,6 +372,238 @@ class TestCallFormula:
         assert result.quantity == 10.0
         assert result.unit == "m/s"
 
+    def test_compound_output_simplified_to_named_unit(self):
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("force")
+        @enforce_dimensions
+        def force(
+            mass: Number[Dimension.mass],
+            acceleration: Number[Dimension.acceleration],
+        ) -> Number:
+            return mass * acceleration
+
+        result = call_formula("force", {
+            "mass": {"value": 10, "unit": "kg"},
+            "acceleration": {"value": 9.81, "unit": "m/s^2"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.quantity == pytest.approx(98.1)
+        assert result.unit == "N"
+        assert result.dimension == "force"
+
+
+# -----------------------------------------------------------------------------
+# Cross-Basis Formula Inputs
+# -----------------------------------------------------------------------------
+
+
+class TestCallFormulaCrossBasis:
+    """Tests for calling formulas with non-default-scale SI units (g, cm, mm).
+
+    ucon v1.6.2 added cross-basis @enforce_dimensions support, so CGS-basis
+    units like dyne pass validation.  However, formulas that call .to_base()
+    stay within the input's basis — mixing CGS and SI arithmetic inside a
+    formula body still raises.  These tests document both the working path
+    (SI units at non-default scale) and the boundary (true CGS-basis units).
+    """
+
+    def test_force_with_grams_and_cm(self):
+        """gram and cm are SI-basis; to_base() yields kg and m."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("grav_force")
+        @enforce_dimensions
+        def grav_force(
+            mass1: Number[Dimension.mass],
+            mass2: Number[Dimension.mass],
+            distance: Number[Dimension.length],
+        ) -> Number:
+            from ucon.constants import gravitational_constant
+            G = gravitational_constant.as_number()
+            mass1 = mass1.to_base()
+            mass2 = mass2.to_base()
+            distance = distance.to_base()
+            return G * mass1 * mass2 / (distance ** 2)
+
+        result = call_formula("grav_force", {
+            "mass1": {"value": 1000, "unit": "g"},
+            "mass2": {"value": 1000, "unit": "g"},
+            "distance": {"value": 100, "unit": "cm"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.dimension == "force"
+        assert result.unit == "N"
+        # 1 kg * 1 kg / (1 m)^2 * G ≈ 6.6743e-11
+        assert result.quantity == pytest.approx(6.6743e-11, rel=1e-3)
+
+    def test_pressure_with_millimeters(self):
+        """mm is SI-basis; formula receives non-base-scale length."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("simple_pressure")
+        @enforce_dimensions
+        def simple_pressure(
+            force: Number[Dimension.force],
+            area: Number[Dimension.area],
+        ) -> Number:
+            force = force.to_base()
+            area = area.to_base()
+            return force / area
+
+        result = call_formula("simple_pressure", {
+            "force": {"value": 1000, "unit": "mN"},
+            "area": {"value": 1, "unit": "m^2"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.dimension == "pressure"
+        assert result.unit == "Pa"
+        # 1 N / 1 m² = 1 Pa
+        assert result.quantity == pytest.approx(1.0)
+
+    def test_energy_with_grams_and_km(self):
+        """Kinetic energy with grams and km/s — both SI-basis."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("kinetic_energy")
+        @enforce_dimensions
+        def kinetic_energy(
+            mass: Number[Dimension.mass],
+            velocity: Number[Dimension.velocity],
+        ) -> Number:
+            mass = mass.to_base()
+            velocity = velocity.to_base()
+            return Number(0.5) * mass * (velocity ** 2)
+
+        result = call_formula("kinetic_energy", {
+            "mass": {"value": 500, "unit": "g"},
+            "velocity": {"value": 10, "unit": "m/s"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.dimension == "energy"
+        assert result.unit == "J"
+        # 0.5 * 0.5 kg * 100 m²/s² = 25 J
+        assert result.quantity == pytest.approx(25.0)
+
+    def test_cgs_basis_unit_coerced_to_si(self):
+        """dyne is CGS-basis — coerced to newton by @enforce_dimensions,
+        so cross-basis arithmetic succeeds."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("cross_basis_work")
+        @enforce_dimensions
+        def cross_basis_work(
+            force: Number[Dimension.force],
+            distance: Number[Dimension.length],
+        ) -> Number:
+            force = force.to_base()
+            distance = distance.to_base()
+            return force * distance
+
+        result = call_formula("cross_basis_work", {
+            "force": {"value": 1.0, "unit": "dyn"},
+            "distance": {"value": 1.0, "unit": "m"},
+        })
+        assert isinstance(result, FormulaResult)
+        # 1 dyn = 1e-5 N, so work = 1e-5 N·m
+        assert result.quantity == pytest.approx(1e-5)
+
+
+# -----------------------------------------------------------------------------
+# Unit Simplification
+# -----------------------------------------------------------------------------
+
+
+class TestSimplifyFormulaUnit:
+    """Tests for _simplify_formula_unit helper."""
+
+    def test_plain_unit_unchanged(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import meter
+
+        result = Number(5.0, meter)
+        assert _simplify_formula_unit(result) is result
+
+    def test_dimensionless_unchanged(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+
+        result = Number(3.14)
+        assert _simplify_formula_unit(result) is result
+
+    def test_single_factor_product_unchanged(self):
+        from ucon.core import UnitProduct
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import meter
+
+        result = Number(10.0, UnitProduct.from_unit(meter))
+        assert _simplify_formula_unit(result) is result
+
+    def test_force_simplifies_to_newton(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import kilogram, meter, second
+
+        compound = kilogram * meter / (second ** 2)
+        result = Number(9.81, compound)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "N"
+        assert simplified.quantity == 9.81
+
+    def test_energy_simplifies_to_joule(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import kilogram, meter, second
+
+        compound = kilogram * meter ** 2 / second ** 2
+        result = Number(100.0, compound)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "J"
+
+    def test_power_simplifies_to_watt(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import kilogram, meter, second
+
+        compound = kilogram * meter ** 2 / second ** 3
+        result = Number(50.0, compound)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "W"
+
+    def test_pressure_simplifies_to_pascal(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import kilogram, meter, second
+
+        compound = kilogram / (meter * second ** 2)
+        result = Number(101325.0, compound)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "Pa"
+
+    def test_voltage_simplifies_to_volt(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import kilogram, meter, second, ampere
+
+        compound = kilogram * meter ** 2 / (ampere * second ** 3)
+        result = Number(12.0, compound)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "V"
+
+    def test_uncertainty_preserved(self):
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import kilogram, meter, second
+
+        compound = kilogram * meter / (second ** 2)
+        result = Number(9.81, compound, uncertainty=0.01)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "N"
+        assert simplified.uncertainty == 0.01
+
+    def test_velocity_not_simplified(self):
+        """m/s has no single named SI unit — should stay compound."""
+        from ucon.tools.mcp.server import _simplify_formula_unit
+        from ucon.units import meter, second
+
+        compound = meter / second
+        result = Number(10.0, compound)
+        simplified = _simplify_formula_unit(result)
+        assert simplified.unit.shorthand == "m/s"
+
 
 # -----------------------------------------------------------------------------
 # Schema Edge Cases
