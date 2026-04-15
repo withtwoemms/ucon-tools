@@ -394,6 +394,121 @@ class TestCallFormula:
 
 
 # -----------------------------------------------------------------------------
+# Cross-Basis Formula Inputs
+# -----------------------------------------------------------------------------
+
+
+class TestCallFormulaCrossBasis:
+    """Tests for calling formulas with non-default-scale SI units (g, cm, mm).
+
+    ucon v1.6.2 added cross-basis @enforce_dimensions support, so CGS-basis
+    units like dyne pass validation.  However, formulas that call .to_base()
+    stay within the input's basis — mixing CGS and SI arithmetic inside a
+    formula body still raises.  These tests document both the working path
+    (SI units at non-default scale) and the boundary (true CGS-basis units).
+    """
+
+    def test_force_with_grams_and_cm(self):
+        """gram and cm are SI-basis; to_base() yields kg and m."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("grav_force")
+        @enforce_dimensions
+        def grav_force(
+            mass1: Number[Dimension.mass],
+            mass2: Number[Dimension.mass],
+            distance: Number[Dimension.length],
+        ) -> Number:
+            from ucon.constants import gravitational_constant
+            G = gravitational_constant.as_number()
+            mass1 = mass1.to_base()
+            mass2 = mass2.to_base()
+            distance = distance.to_base()
+            return G * mass1 * mass2 / (distance ** 2)
+
+        result = call_formula("grav_force", {
+            "mass1": {"value": 1000, "unit": "g"},
+            "mass2": {"value": 1000, "unit": "g"},
+            "distance": {"value": 100, "unit": "cm"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.dimension == "force"
+        assert result.unit == "N"
+        # 1 kg * 1 kg / (1 m)^2 * G ≈ 6.6743e-11
+        assert result.quantity == pytest.approx(6.6743e-11, rel=1e-3)
+
+    def test_pressure_with_millimeters(self):
+        """mm is SI-basis; formula receives non-base-scale length."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("simple_pressure")
+        @enforce_dimensions
+        def simple_pressure(
+            force: Number[Dimension.force],
+            area: Number[Dimension.area],
+        ) -> Number:
+            force = force.to_base()
+            area = area.to_base()
+            return force / area
+
+        result = call_formula("simple_pressure", {
+            "force": {"value": 1000, "unit": "mN"},
+            "area": {"value": 1, "unit": "m^2"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.dimension == "pressure"
+        assert result.unit == "Pa"
+        # 1 N / 1 m² = 1 Pa
+        assert result.quantity == pytest.approx(1.0)
+
+    def test_energy_with_grams_and_km(self):
+        """Kinetic energy with grams and km/s — both SI-basis."""
+        from ucon.tools.mcp.server import call_formula, FormulaResult
+
+        @register_formula("kinetic_energy")
+        @enforce_dimensions
+        def kinetic_energy(
+            mass: Number[Dimension.mass],
+            velocity: Number[Dimension.velocity],
+        ) -> Number:
+            mass = mass.to_base()
+            velocity = velocity.to_base()
+            return Number(0.5) * mass * (velocity ** 2)
+
+        result = call_formula("kinetic_energy", {
+            "mass": {"value": 500, "unit": "g"},
+            "velocity": {"value": 10, "unit": "m/s"},
+        })
+        assert isinstance(result, FormulaResult)
+        assert result.dimension == "energy"
+        assert result.unit == "J"
+        # 0.5 * 0.5 kg * 100 m²/s² = 25 J
+        assert result.quantity == pytest.approx(25.0)
+
+    def test_cgs_basis_unit_passes_validation_but_fails_arithmetic(self):
+        """dyne is CGS-basis — passes @enforce_dimensions but to_base()
+        stays in CGS, so multiplying CGS force × SI length raises."""
+        from ucon.tools.mcp.server import call_formula, FormulaError
+
+        @register_formula("cross_basis_trap")
+        @enforce_dimensions
+        def cross_basis_trap(
+            force: Number[Dimension.force],
+            distance: Number[Dimension.length],
+        ) -> Number:
+            force = force.to_base()
+            distance = distance.to_base()
+            return force * distance
+
+        result = call_formula("cross_basis_trap", {
+            "force": {"value": 1.0, "unit": "dyn"},
+            "distance": {"value": 1.0, "unit": "m"},
+        })
+        assert isinstance(result, FormulaError)
+        assert result.error_type == "dimension_mismatch"
+
+
+# -----------------------------------------------------------------------------
 # Unit Simplification
 # -----------------------------------------------------------------------------
 
