@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Formula output simplification.** `call_formula` now auto-simplifies
+  compound output units to their named SI equivalents when the conversion
+  factor is exactly 1.0 (e.g. `kg·m/s²` → `N`, `kg·m²/s²` → `J`,
+  `kg·m²/s³` → `W`).
+
+- **Cross-basis formula input tests.** Formulas now accept non-default-scale
+  SI inputs (g, cm, mN) and — with ucon v1.6.3's cross-basis coercion —
+  CGS-basis inputs (dyne, erg, poise) that are automatically coerced to SI
+  before the formula body runs.
+
 - **Left-to-right associativity tests** for the `convert` tool
   (`TestConvertLeftToRightAssociativity`, 5 tests):
   - `m/s*kg` parses as `(m/s)·kg`, not `m/(s·kg)`
@@ -30,9 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Minimum `ucon` dependency bumped from `>=1.6.0` to `>=1.6.1a1`
-  - Required for left-to-right parser fix and corrected G, R, σ constant
-    unit strings
+- Minimum `ucon` dependency bumped from `>=1.6.0` to `>=1.6.3a1`
+  - Required for cross-basis coercion in `@enforce_dimensions`
 
 ## [0.4.4] - 2026-04-13
 
