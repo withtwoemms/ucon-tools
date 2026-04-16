@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (non-functional)
+
+- `glama.json` metadata file for [Glama](https://glama.ai) MCP server registry
+
+## [0.4.5] - 2026-04-15
+
 ### Added
 
 - **Formula output simplification.** `call_formula` now auto-simplifies
