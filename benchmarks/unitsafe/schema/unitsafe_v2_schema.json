@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ucon.dev/unitsafe/v2/problem.schema.json",
+  "title": "UnitSafe Problem",
+  "description": "A single problem in the UnitSafe benchmark for evaluating metrological reasoning in AI models.",
+  "type": "object",
+  "required": [
+    "problem_id",
+    "problem_text",
+    "answer",
+    "quantity_kind",
+    "si_signature",
+    "koq_cluster",
+    "koq_confuser",
+    "difficulty",
+    "must_fail",
+    "expected_error",
+    "source",
+    "tags"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "problem_id": {
+      "type": "string",
+      "description": "Unique identifier. Convention: '{domain}-{NNN}' for originals, '{textbook_id}' for SciBench-derived."
+    },
+    "problem_text": {
+      "type": "string",
+      "description": "The problem statement presented to the model. Should be self-contained."
+    },
+    "answer": {
+      "type": "object",
+      "required": ["value", "unit", "tolerance_pct"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "number",
+          "description": "Expected numeric answer. 0 for must-fail problems."
+        },
+        "unit": {
+          "type": "string",
+          "description": "Expected unit of the answer."
+        },
+        "tolerance_pct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Acceptable percentage deviation. 0 for must-fail or exact-match problems."
+        }
+      }
+    },
+    "quantity_kind": {
+      "type": "object",
+      "required": ["key", "category"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Specific quantity kind (e.g. 'entropy_change', 'mass', 'absorbed_dose'). Use 'invalid' for must-fail problems."
+        },
+        "category": {
+          "type": "string",
+          "description": "Domain grouping (e.g. 'thermodynamic', 'medical', 'radiation', 'electrical', 'mechanical')."
+        }
+      }
+    },
+    "si_signature": {
+      "type": "string",
+      "description": "SI base dimension exponent signature (e.g. 'M·L²·T⁻²·Θ⁻¹'). Uses: M (mass), L (length), T (time), I (current), Θ (temperature), N (amount), J (luminosity), A (angle). 'dimensionless' for ratios."
+    },
+    "koq_cluster": {
+      "type": "string",
+      "description": "Groups problems sharing the same SI signature but different quantity kinds. 'none' for unambiguous conversions. 'dimensional_safety' for must-fail dimension mismatches.",
+      "examples": [
+        "cluster_1_JK",
+        "cluster_2_JKmol",
+        "cluster_3_kJmol",
+        "cluster_4_Jkg",
+        "cluster_5_Nm",
+        "cluster_6_VA_W_var",
+        "cluster_7_Pa_stress_energy_density",
+        "none",
+        "dimensional_safety"
+      ]
+    },
+    "koq_confuser": {
+      "type": ["string", "null"],
+      "description": "The quantity kind a model might incorrectly assign. Null when no KOQ ambiguity exists. For cluster problems, names the degenerate partner (e.g. 'dose_equivalent' when correct is 'absorbed_dose')."
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["tier_1", "tier_2", "tier_3", "tier_4"],
+      "description": "tier_1: single-step conversion. tier_2: multi-step or KOQ awareness. tier_3: multi-hop with domain knowledge. tier_4: requires reasoning about physical constraints or algebraic structure."
+    },
+    "must_fail": {
+      "type": "boolean",
+      "description": "If true, the correct model behavior is to refuse or flag an error — not produce a numeric answer."
+    },
+    "expected_error": {
+      "type": ["string", "null"],
+      "enum": ["dimension_mismatch", "koq_mismatch", "insufficient_context", null],
+      "description": "Error type for must-fail problems. Null when must_fail is false."
+    },
+    "source": {
+      "type": "object",
+      "required": ["dataset", "origin"],
+      "additionalProperties": false,
+      "properties": {
+        "dataset": {
+          "type": "string",
+          "description": "Source dataset: 'unitsafe' for originals, 'SciBench' for adapted textbook problems."
+        },
+        "origin": {
+          "type": ["string", "null"],
+          "description": "Provenance within dataset. For SciBench: textbook name. For unitsafe: domain category (e.g. 'nursing', 'radiation_physics', 'electrical')."
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Freeform labels for cross-cutting analysis (e.g. 'medical', 'flow_rate', 'gray_sievert'). Empty array if none apply."
+    }
+  }
+}
