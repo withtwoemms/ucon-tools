@@ -69,11 +69,32 @@ jobs:
 
       - name: Check CHANGELOG updated
         run: |
-          if ! git diff --name-only origin/main...HEAD | grep -q '^CHANGELOG.md$'; then
-            echo "::error::Please add a CHANGELOG entry under [Unreleased]"
+          changed=$(git diff --name-only origin/main...HEAD)
+          errors=0
+
+          # If benchmarks/unitsafe/ files changed, require its CHANGELOG
+          if echo "$changed" | grep -q '^benchmarks/unitsafe/'; then
+            if echo "$changed" | grep -q '^benchmarks/unitsafe/CHANGELOG.md$'; then
+              echo "benchmarks/unitsafe/CHANGELOG.md updated ✓"
+            else
+              echo "::error::benchmarks/unitsafe/ was modified — please update benchmarks/unitsafe/CHANGELOG.md"
+              errors=$((errors + 1))
+            fi
+          fi
+
+          # If files outside benchmarks/unitsafe/ changed, require root CHANGELOG
+          if echo "$changed" | grep -qv '^benchmarks/unitsafe/'; then
+            if echo "$changed" | grep -q '^CHANGELOG.md$'; then
+              echo "CHANGELOG.md updated ✓"
+            else
+              echo "::error::Please add a CHANGELOG entry under [Unreleased] in CHANGELOG.md"
+              errors=$((errors + 1))
+            fi
+          fi
+
+          if [ "$errors" -gt 0 ]; then
             exit 1
           fi
-          echo "CHANGELOG.md was updated"
 
   # Single status check for branch protection
   ci:
