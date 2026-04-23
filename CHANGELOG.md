@@ -18,7 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (non-functional)
 
+- `MANIFEST.in` to exclude benchmarks, docs, tests, scripts, and CI
+  config from sdist
 - `glama.json` metadata file for [Glama](https://glama.ai) MCP server registry
+
+### Fixed
+
+- replaces codecov badge in accordance with recent repo ownership handover
 
 ## [0.4.5] - 2026-04-15
 
