@@ -1,0 +1,17 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+
+recursive-include ucon *.py
+
+exclude .gitignore
+exclude uv.lock
+exclude Makefile
+exclude glama.json
+
+prune .github
+prune benchmarks
+prune docs
+prune scripts
+prune tests

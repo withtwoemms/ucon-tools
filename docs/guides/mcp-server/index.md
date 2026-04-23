@@ -335,6 +335,25 @@ compute(
 
 The step trace shows dimensional consistency at each point, so Claude can verify the calculation is physically meaningful.
 
+## Evaluating with UnitSafe
+
+[UnitSafe](https://huggingface.co/datasets/radiativity/UnitSafe) is a 500-problem benchmark for measuring how well models handle unit conversion, dimensional analysis, and kind-of-quantity discrimination. Use it to compare bare model performance against tool-augmented performance with the MCP server:
+
+```bash
+# Bare evaluation (no tools — model solves from memory)
+python benchmarks/unitsafe/run.py -m claude:claude-haiku-4-5-20251001
+
+# Tool-augmented evaluation (model uses MCP tools)
+python benchmarks/unitsafe/run.py -m claude:claude-haiku-4-5-20251001 \
+  --tools --force-tools --mcp-url https://mcp.ucon.dev/mcp/<instance>/mcp
+
+# Use a different model as judge for answer extraction
+python benchmarks/unitsafe/run.py -m ollama:llama3.2:3b \
+  --judge claude:claude-haiku-4-5-20251001
+```
+
+See [`benchmarks/unitsafe/`](https://github.com/withtwoemms/ucon-tools/tree/main/benchmarks/unitsafe) for the full dataset, runner documentation, and evaluation protocol.
+
 ## Guides
 
 - [Registering Formulas](registering-formulas.md) — Expose dimensionally-typed calculations to agents

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- [UnitSafe](https://huggingface.co/datasets/radiativity/UnitSafe) benchmark
+  runner (`benchmarks/unitsafe/run.py`) for evaluating models on 500
+  metrological reasoning problems
+- UnitSafe section in README and MCP server guide with evaluation examples
+- CHANGELOG gate in CI now scopes to sub-project changelogs
+  (`benchmarks/unitsafe/CHANGELOG.md`) when only sub-project files change
+
 ### Added (non-functional)
 
 - `glama.json` metadata file for [Glama](https://glama.ai) MCP server registry

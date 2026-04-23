@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-23
+
+### Fixed
+
+- nursing-011: expected unit corrected from `mg/kg` to `mg/kg/dose` to match
+  problem text ("Convert to mg/kg/dose")
+- geo-023: expected unit corrected from `g/g` to `dimensionless` — the answer
+  is a dimensionless ratio, not a unit-bearing quantity
+
 ## [0.1.0] - 2026-04-23
 
 Initial public release.
@@ -34,5 +43,6 @@ Initial public release.
 - Summary metrics: overall/conversion/refusal accuracy, KOQ discrimination
   score, per-tier and per-cluster breakdowns
 
-[Unreleased]: https://github.com/withtwoemms/ucon-tools/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/withtwoemms/ucon-tools/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/withtwoemms/ucon-tools/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/withtwoemms/ucon-tools/releases/tag/v0.1.0
