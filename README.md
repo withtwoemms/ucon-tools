@@ -154,6 +154,25 @@ ucon-mcp --transport sse    # SSE transport for remote clients
 
 ---
 
+## UnitSafe Benchmark
+
+[UnitSafe](https://huggingface.co/datasets/radiativity/UnitSafe) is a 500-problem metrological reasoning benchmark for evaluating how well AI models handle unit conversion, dimensional analysis, and kind-of-quantity discrimination. It ships with a runner that can evaluate any model with or without MCP tool augmentation.
+
+```bash
+pip install ucon-tools[benchmark]
+
+# Bare evaluation (model solves from memory)
+python benchmarks/unitsafe/run.py -m claude:claude-haiku-4-5-20251001
+
+# Tool-augmented evaluation (model uses MCP tools)
+python benchmarks/unitsafe/run.py -m claude:claude-haiku-4-5-20251001 \
+  --tools --mcp-url https://mcp.ucon.dev/mcp/<instance>/mcp
+```
+
+See [`benchmarks/unitsafe/`](./benchmarks/unitsafe/) for the full dataset, runner, and evaluation protocol.
+
+---
+
 ## Development
 
 ```bash
