@@ -990,6 +990,26 @@ def score_problem(
         # Model gave a bare number for a dimensionless quantity — correct
         score_unit = True
 
+    # Scale-prefix fallback: if unit strings differ but represent the same
+    # dimension (e.g. kJ/mol vs J/mol), rescale the predicted value and
+    # re-check numerical accuracy.  Unit.fold_scale() is only on UnitProduct;
+    # bare Unit objects have an implicit scale of 1.
+    if not score_unit and not score_numerical and extraction.unit and extraction.value is not None:
+        try:
+            from ucon.units import get_unit_by_name
+            u_exp = get_unit_by_name(expected_unit)
+            u_pred = get_unit_by_name(extraction.unit)
+            if u_exp.dimension == u_pred.dimension:
+                score_unit = True
+                s_pred = u_pred.fold_scale() if hasattr(u_pred, "fold_scale") else 1.0
+                s_exp = u_exp.fold_scale() if hasattr(u_exp, "fold_scale") else 1.0
+                adjusted = extraction.value * (s_pred / s_exp)
+                if expected_value is not None and expected_value != 0:
+                    pct_error = abs(adjusted - expected_value) / abs(expected_value) * 100
+                    score_numerical = pct_error <= tolerance_pct
+        except Exception:
+            pass
+
     score_overall = score_numerical and score_unit and score_refusal
     return score_numerical, score_unit, score_refusal, score_overall
 
