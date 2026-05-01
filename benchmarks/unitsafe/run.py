@@ -25,13 +25,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import re
+import shutil
 import sys
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+log = logging.getLogger("unitsafe")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +136,7 @@ class ClaudeBackend:
         *,
         tools: list[dict[str, Any]] | None = None,
         system: str | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> Message:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -142,7 +147,11 @@ class ClaudeBackend:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
 
+        log.debug("claude request model=%s messages=%d tools=%d",
+                  self.model, len(messages), len(tools or []))
         resp = await self.client.messages.create(**kwargs)
 
         text_parts: list[str] = []
@@ -155,6 +164,9 @@ class ClaudeBackend:
                     ToolCall(id=block.id, name=block.name, arguments=block.input)
                 )
 
+        log.debug("claude response text_len=%d tool_calls=%d usage=%s",
+                  sum(len(t) for t in text_parts), len(tool_calls),
+                  getattr(resp, "usage", None))
         return Message(
             text="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
@@ -162,10 +174,13 @@ class ClaudeBackend:
 
 
 class OllamaBackend:
-    """Wraps ``ollama.chat`` via ``asyncio.to_thread``."""
+    """Wraps ``ollama.Client`` with queue-based async bridge."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, *, num_ctx: int | None = None, show_thinking: bool = False, think: bool = True):
         self.model = model
+        self.num_ctx = num_ctx
+        self.show_thinking = show_thinking
+        self.think = think
 
     async def preflight(self) -> None:
         """Verify Ollama is running and the model is available."""
@@ -179,8 +194,6 @@ class OllamaBackend:
             ) from exc
 
         available = [m.model for m in models.models]
-        # Ollama normalises tags: "qwen3:0.6b" may appear as "qwen3:0.6b"
-        # or with a default tag appended.  Check prefix match.
         if not any(
             m == self.model or m.startswith(self.model + ":")
             for m in available
@@ -197,6 +210,7 @@ class OllamaBackend:
         *,
         tools: list[dict[str, Any]] | None = None,
         system: str | None = None,
+        tool_choice: dict[str, Any] | None = None,  # ignored by Ollama
     ) -> Message:
         import ollama
 
@@ -222,15 +236,167 @@ class OllamaBackend:
             "model": self.model,
             "messages": ollama_msgs,
         }
+        if not self.think:
+            kwargs["think"] = False
+        if self.num_ctx:
+            kwargs["options"] = {"num_ctx": self.num_ctx}
         if tools:
             ollama_tools = _to_ollama_tools(tools)
             if ollama_tools:
                 kwargs["tools"] = ollama_tools
 
-        resp = await asyncio.to_thread(ollama.chat, **kwargs)
+        log.debug("ollama request model=%s messages=%d tools=%d",
+                  self.model, len(ollama_msgs), len(kwargs.get("tools", [])))
 
-        text = resp.get("message", {}).get("content") or None
-        raw_tool_calls = resp.get("message", {}).get("tool_calls") or []
+        text_chunks: list[str] = []
+        raw_tool_calls: list[Any] = []
+        token_count = 0
+        thinking_count = 0
+        first_token_at: float | None = None
+        t_start = time.monotonic()
+        show = self.show_thinking
+        in_thinking = False
+
+        # Use a queue to bridge sync streaming thread → async event loop.
+        # This lets the heartbeat run between chunks AND lets asyncio
+        # cancellation close the HTTP client to stop the thread.
+        import queue
+        _SENTINEL = object()
+        chunk_q: queue.Queue = queue.Queue()
+        sync_client = ollama.Client()
+
+        def _stream_thread() -> None:
+            try:
+                for chunk in sync_client.chat(**kwargs, stream=True):
+                    chunk_q.put(chunk)
+                chunk_q.put(_SENTINEL)
+            except Exception as exc:
+                chunk_q.put(exc)
+
+        thread = __import__("threading").Thread(target=_stream_thread, daemon=True)
+        thread.start()
+
+        if show:
+            print("       ┌── model output ──", file=sys.stderr, flush=True)
+
+        # Consume chunks from the queue with periodic heartbeats
+        heartbeat_interval = 10
+        try:
+            while True:
+                try:
+                    item = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: chunk_q.get(timeout=heartbeat_interval),
+                    )
+                except Exception:
+                    # queue.Empty on timeout — print heartbeat
+                    elapsed = time.monotonic() - t_start
+                    if token_count == 0 and thinking_count == 0:
+                        print(
+                            f"       Still waiting for model... ({elapsed:.0f}s elapsed)",
+                            file=sys.stderr, flush=True,
+                        )
+                    elif thinking_count > 0 and token_count == 0 and not show:
+                        print(
+                            f"       Still thinking... ({elapsed:.0f}s, {thinking_count} thinking tokens so far)",
+                            file=sys.stderr, flush=True,
+                        )
+                    continue
+
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+
+                chunk = item
+                msg = chunk.message
+                thinking = getattr(msg, "thinking", None) or ""
+                token = msg.content or ""
+
+                if thinking:
+                    thinking_count += 1
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        if show:
+                            print("       (thinking) ", end="", file=sys.stderr, flush=True)
+                        else:
+                            wait = first_token_at - t_start
+                            print(
+                                f"       Model is thinking... (first token after {wait:.1f}s)",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        in_thinking = True
+                    if show:
+                        print(thinking, end="", file=sys.stderr, flush=True)
+
+                if token:
+                    if in_thinking and show:
+                        print(
+                            f"\n       (done thinking, {thinking_count} tokens)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        print("       ", end="", file=sys.stderr, flush=True)
+                        in_thinking = False
+                    text_chunks.append(token)
+                    token_count += 1
+                    if show:
+                        print(token, end="", file=sys.stderr, flush=True)
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        if not show:
+                            wait = first_token_at - t_start
+                            print(
+                                f"       First token after {wait:.1f}s, generating...",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    if not show and token_count % 100 == 0:
+                        elapsed = time.monotonic() - first_token_at
+                        tps = token_count / elapsed if elapsed > 0 else 0
+                        print(
+                            f"       ... {token_count} tokens ({tps:.0f} tok/s)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+
+                tc = getattr(msg, "tool_calls", None)
+                if tc:
+                    raw_tool_calls.extend(tc)
+        except (asyncio.CancelledError, Exception):
+            # On cancellation (timeout), close the sync client's httpx session
+            # to abort the in-flight HTTP request and unblock the thread
+            try:
+                sync_client._client.close()
+            except Exception:
+                pass
+            raise
+
+        text = "".join(text_chunks) or None
+        elapsed = time.monotonic() - t_start
+        total_tokens = token_count + thinking_count
+        thinking_note = f" ({thinking_count} thinking + {token_count} content)" if thinking_count > 0 else ""
+        if show and total_tokens > 0:
+            print(
+                f"\n       └── {total_tokens} tokens in {elapsed:.1f}s{thinking_note}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif total_tokens > 0:
+            gen_time = elapsed - ((first_token_at or t_start) - t_start)
+            tps = total_tokens / gen_time if gen_time > 0 else 0
+            print(
+                f"       Done: {total_tokens} tokens in {elapsed:.1f}s ({tps:.0f} tok/s){thinking_note}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"       Model returned empty response after {elapsed:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+
         tool_calls: list[ToolCall] = []
         for i, tc in enumerate(raw_tool_calls):
             fn = tc.get("function", {})
@@ -270,6 +436,7 @@ class ClaudeCodeBackend:
         *,
         tools: list[dict[str, Any]] | None = None,
         system: str | None = None,
+        tool_choice: dict[str, Any] | None = None,  # not supported via CLI
     ) -> Message:
         # Build the prompt from messages — claude -p takes a single text prompt
         parts: list[str] = []
@@ -291,18 +458,28 @@ class ClaudeCodeBackend:
         if self.model:
             cmd.extend(["--model", self.model])
 
+        log.debug("claude-code request model=%s prompt_len=%d",
+                  self.model or "(default)", len(prompt))
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.wait()
+            raise
 
         if proc.returncode != 0:
             err = stderr.decode().strip()
+            log.warning("claude-code exit=%d stderr=%s", proc.returncode, err)
             return Message(text=f"[claude-code error: {err}]")
 
-        return Message(text=stdout.decode().strip())
+        text = stdout.decode().strip()
+        log.debug("claude-code response text_len=%d", len(text))
+        return Message(text=text)
 
 
 def _to_ollama_tools(
@@ -322,7 +499,13 @@ def _to_ollama_tools(
     return result
 
 
-def make_backend(spec: str) -> ModelBackend:
+def make_backend(
+    spec: str,
+    *,
+    num_ctx: int | None = None,
+    show_thinking: bool = False,
+    think: bool = True,
+) -> ModelBackend:
     """Parse a ``backend:model`` spec and return the corresponding backend.
 
     Specs use ``backend:model`` format.  For ``claude-code``, the model
@@ -343,7 +526,7 @@ def make_backend(spec: str) -> ModelBackend:
     if backend == "claude":
         return ClaudeBackend(model)
     elif backend == "ollama":
-        return OllamaBackend(model)
+        return OllamaBackend(model, num_ctx=num_ctx, show_thinking=show_thinking, think=think)
     else:
         raise ValueError(
             f"Unknown backend {backend!r} — supported: claude, claude-code, ollama"
@@ -369,28 +552,123 @@ class MCPToolBridge:
         self._cm: Any = None
         self._session_cm: Any = None
 
-    async def connect_stdio(self, command: str, args: list[str] | None = None) -> None:
+    async def connect_stdio(
+        self, command: str, args: list[str] | None = None, *, timeout: float = 30,
+    ) -> None:
+        if not shutil.which(command):
+            raise RuntimeError(
+                f"MCP server command {command!r} not found on PATH. "
+                f"Install it with:  uv sync --extra mcp"
+            )
+
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
         params = StdioServerParameters(command=command, args=args or [])
         self._cm = stdio_client(params)
-        self._read, self._write = await self._cm.__aenter__()
-        self._session_cm = ClientSession(self._read, self._write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
-        await self._fetch_tools()
+        try:
+            self._read, self._write = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=timeout,
+            )
+            self._session_cm = ClientSession(self._read, self._write)
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(), timeout=timeout,
+            )
+            await asyncio.wait_for(self._session.initialize(), timeout=timeout)
+            await asyncio.wait_for(self._fetch_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(
+                f"MCP server {command!r} did not respond within {timeout}s. "
+                f"Verify it starts correctly by running: {command}"
+            )
 
-    async def connect_sse(self, url: str) -> None:
+    async def connect_url(
+        self, url: str, *, api_key: str | None = None, timeout: float = 30,
+    ) -> None:
+        """Connect to a remote MCP server.
+
+        Tries Streamable HTTP first, falls back to SSE.
+        """
+        headers: dict[str, str] | None = None
+        if api_key:
+            headers = {"Authorization": f"Bearer {api_key}"}
+
+        # Try Streamable HTTP first (default for mcp SDK >=1.8)
+        try:
+            await self._connect_streamable_http(url, headers=headers, timeout=timeout)
+            return
+        except Exception as streamable_err:
+            log.debug("Streamable HTTP failed: %s — falling back to SSE", streamable_err)
+            # Reset any partial state
+            await self.close()
+            self._session = None
+            self._read = None
+            self._write = None
+            self._cm = None
+            self._session_cm = None
+
+        # Fall back to SSE
+        try:
+            await self._connect_sse(url, headers=headers, timeout=timeout)
+        except Exception as sse_err:
+            raise RuntimeError(
+                f"Could not connect to MCP server at {url}. "
+                f"Streamable HTTP failed: {streamable_err}  |  SSE failed: {sse_err}"
+            ) from sse_err
+
+    async def _connect_streamable_http(
+        self, url: str, *, headers: dict[str, str] | None = None, timeout: float = 30,
+    ) -> None:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        self._cm = streamablehttp_client(url, headers=headers)
+        try:
+            read, write, _get_session_id = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"Streamable HTTP server at {url} did not respond within {timeout}s")
+
+        self._read, self._write = read, write
+        self._session_cm = ClientSession(self._read, self._write)
+        try:
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(), timeout=timeout,
+            )
+            await asyncio.wait_for(self._session.initialize(), timeout=timeout)
+            await asyncio.wait_for(self._fetch_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"MCP session init timed out after {timeout}s")
+
+    async def _connect_sse(
+        self, url: str, *, headers: dict[str, str] | None = None, timeout: float = 30,
+    ) -> None:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
-        self._cm = sse_client(url)
-        self._read, self._write = await self._cm.__aenter__()
+        self._cm = sse_client(url, headers=headers)
+        try:
+            self._read, self._write = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"SSE server at {url} did not respond within {timeout}s")
+
         self._session_cm = ClientSession(self._read, self._write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
-        await self._fetch_tools()
+        try:
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(), timeout=timeout,
+            )
+            await asyncio.wait_for(self._session.initialize(), timeout=timeout)
+            await asyncio.wait_for(self._fetch_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"MCP session init timed out after {timeout}s")
 
     async def close(self) -> None:
         if self._session_cm:
@@ -422,6 +700,15 @@ class MCPToolBridge:
             else:
                 parts.append(str(item))
         return "\n".join(parts) if parts else ""
+
+
+_FORCE_TOOLS_SYSTEM = """\
+You are being evaluated on your ability to use tools for unit conversion.
+You MUST use the provided tools to perform any unit conversions or lookups.
+Do NOT solve problems from memory or mental math.
+Always call at least one tool before giving your final answer.
+After receiving tool results, present your final answer clearly.\
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +745,10 @@ class Judge:
         ]
         resp = await self.backend.generate(messages, system=_JUDGE_SYSTEM)
         raw = resp.text or ""
-        return _parse_extraction(raw)
+        extraction = _parse_extraction(raw)
+        log.debug("judge extraction value=%s unit=%s refused=%s",
+                  extraction.value, extraction.unit, extraction.refused)
+        return extraction
 
 
 def _parse_extraction(raw: str) -> Extraction:
@@ -474,11 +764,13 @@ def _parse_extraction(raw: str) -> Extraction:
     # Try to find a JSON object
     match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
     if not match:
+        log.warning("judge returned no JSON: %s", text[:200])
         return Extraction()
 
     try:
         obj = json.loads(match.group())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        log.warning("judge JSON parse failed: %s — raw: %s", exc, text[:200])
         return Extraction()
 
     return Extraction(
@@ -517,8 +809,50 @@ _SUPERSCRIPT_MAP = str.maketrans({
 })
 
 
+# Long-form and plural unit names → canonical short form (lowercase).
+# Covers the aliases observed in model outputs from the control run.
+_UNIT_ALIASES: dict[str, str] = {
+    # Time
+    "seconds": "s", "second": "s",
+    "minutes": "min", "minute": "min",
+    "hours": "h", "hour": "h",
+    # Length
+    "meters": "m", "meter": "m", "metres": "m", "metre": "m",
+    "inches": "in", "inch": "in",
+    "feet": "ft", "foot": "ft",
+    # Mass
+    "grams": "g", "gram": "g",
+    "kilograms": "kg", "kilogram": "kg",
+    "pounds": "lb", "pound": "lb",
+    # Energy / Power
+    "watts": "w", "watt": "w",
+    "joules": "j", "joule": "j",
+    # Volume
+    "gallons": "gal", "gallon": "gal",
+    "liters": "l", "liter": "l", "litres": "l", "litre": "l",
+    # Astronomy
+    "light-years": "ly", "light-year": "ly",
+    "parsecs": "pc", "parsec": "pc",
+    "solar masses": "m☉", "solar mass": "m☉",
+    "arcseconds": "arcsec", "arcsecond": "arcsec",
+    "arcminutes": "arcmin", "arcminute": "arcmin",
+    "microradians": "µrad", "microradian": "µrad",
+    # Photometry
+    "millilumens": "mlm", "millilumen": "mlm",
+}
+
+# Strings that should be treated as equivalent to "dimensionless"
+_DIMENSIONLESS_SYNONYMS = {"", "dimensionless", "ratio", "unitless", "pure number"}
+
+
 def normalise_unit(u: str) -> str:
-    """Normalise a unit string for comparison."""
+    """Normalise a unit string for comparison.
+
+    Applies cosmetic normalisation (unicode, case, brackets) then parses the
+    unit into a canonical factored form so that algebraically equivalent
+    representations compare equal.  For example ``J/K/mol`` and ``J/(mol·K)``
+    both canonicalise to ``j*k^-1*mol^-1``.
+    """
     s = u.strip()
     # Unicode NFKD normalisation (decomposes compatibility chars)
     s = unicodedata.normalize("NFKD", s)
@@ -532,7 +866,91 @@ def normalise_unit(u: str) -> str:
     s = s.replace("·", "*").replace("⋅", "*").replace("\u00b7", "*")
     # Lowercase
     s = s.lower()
-    return s
+
+    # Check for dimensionless synonyms early
+    if s in _DIMENSIONLESS_SYNONYMS:
+        return "dimensionless"
+
+    # Replace long-form / plural unit names with canonical short forms
+    # Try longest match first to handle multi-word aliases ("solar masses")
+    for alias, canonical in sorted(_UNIT_ALIASES.items(), key=lambda x: -len(x[0])):
+        s = re.sub(r'\b' + re.escape(alias) + r'\b', canonical, s)
+
+    # Re-apply NFKD after alias substitution so that characters injected by
+    # aliases (e.g. U+00B5 MICRO SIGN in "µrad") get normalised to their
+    # canonical decomposition (U+03BC GREEK SMALL MU), matching the expected
+    # unit which also goes through NFKD.
+    s = unicodedata.normalize("NFKD", s)
+
+    # Try to parse into a canonical factored form
+    try:
+        factors = _parse_unit_factors(s)
+        # Build canonical string: sorted factors with explicit exponents
+        parts = []
+        for base, exp in sorted(factors.items()):
+            if exp == 1:
+                parts.append(base)
+            else:
+                parts.append(f"{base}^{exp}")
+        return "*".join(parts) if parts else s
+    except Exception:
+        # Fall back to cosmetic normalisation only
+        return s
+
+
+def _parse_unit_factors(s: str) -> dict[str, int]:
+    """Parse a normalised unit string into {base_unit: exponent} factors.
+
+    Handles patterns like:
+      - ``j/k/mol``        → {j: 1, k: -1, mol: -1}
+      - ``j/(mol*k)``      → {j: 1, mol: -1, k: -1}
+      - ``kg*m^2/s^2``     → {kg: 1, m: 2, s: -2}
+      - ``kg*m^2*s^-2``    → {kg: 1, m: 2, s: -2}
+      - ``m/s^2``          → {m: 1, s: -2}
+    """
+    factors: dict[str, int] = {}
+    # Tokenise: split on / at the top level (respecting parentheses)
+    # First, split into numerator and denominator groups by top-level /
+    groups: list[tuple[str, int]] = []  # (group_str, sign)
+    depth = 0
+    current: list[str] = []
+    sign = 1  # +1 for numerator, -1 for denominator
+    for ch in s:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "/" and depth == 0:
+            groups.append(("".join(current), sign))
+            current = []
+            sign = -1
+        else:
+            current.append(ch)
+    groups.append(("".join(current), sign))
+
+    for group, gsign in groups:
+        group = group.strip()
+        # Strip outer parens: (mol*k) → mol*k
+        if group.startswith("(") and group.endswith(")"):
+            group = group[1:-1]
+        # Split on * or space (multiplication)
+        tokens = re.split(r"[* ]+", group)
+        for tok in tokens:
+            tok = tok.strip()
+            if not tok:
+                continue
+            # Parse exponent: kg^2, s^-2, m2, m^2
+            m = re.match(r"^([a-z_]+)\^?(-?\d+)$", tok)
+            if m:
+                base, exp = m.group(1), int(m.group(2))
+            else:
+                base, exp = tok, 1
+            factors[base] = factors.get(base, 0) + exp * gsign
+
+    # Remove factors with exponent 0
+    return {b: e for b, e in factors.items() if e != 0}
 
 
 def score_problem(
@@ -565,8 +983,12 @@ def score_problem(
 
     # Unit match
     score_unit = False
+    norm_expected = normalise_unit(expected_unit) if expected_unit else ""
     if extraction.unit is not None and expected_unit:
-        score_unit = normalise_unit(extraction.unit) == normalise_unit(expected_unit)
+        score_unit = normalise_unit(extraction.unit) == norm_expected
+    elif extraction.unit is None and norm_expected == "dimensionless":
+        # Model gave a bare number for a dimensionless quantity — correct
+        score_unit = True
 
     score_overall = score_numerical and score_unit and score_refusal
     return score_numerical, score_unit, score_refusal, score_overall
@@ -587,12 +1009,16 @@ class Evaluator:
         mcp_bridge: MCPToolBridge | None = None,
         max_tool_rounds: int = 10,
         condition: str = "bare",
+        timeout: float = 120,
+        force_tools: bool = False,
     ):
         self.backend = backend
         self.judge = judge
         self.mcp_bridge = mcp_bridge
         self.max_tool_rounds = max_tool_rounds
         self.condition = condition
+        self.timeout = timeout
+        self.force_tools = force_tools
 
     async def evaluate(
         self,
@@ -613,65 +1039,21 @@ class Evaluator:
             else None
         )
 
+        pid = problem.get("problem_id", "?")
+        _say = lambda msg: print(f"       {msg}", file=sys.stderr, flush=True)
+
         try:
+            final_text, extraction, tool_log = await asyncio.wait_for(
+                self._run_loop(pid, messages, tools, tool_log, _say),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError:
+            _say(f"Timed out waiting for model response ({self.timeout:.0f}s limit)")
             final_text = ""
-            for _round in range(self.max_tool_rounds + 1):
-                resp = await self.backend.generate(messages, tools=tools)
-
-                if resp.text:
-                    final_text = resp.text
-
-                if not resp.tool_calls or not self.mcp_bridge:
-                    break
-
-                # Build assistant message with tool use
-                assistant_content: list[dict[str, Any]] = []
-                if resp.text:
-                    assistant_content.append({"type": "text", "text": resp.text})
-                for tc in resp.tool_calls:
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
-                    })
-                messages.append({"role": "assistant", "content": assistant_content})
-
-                # Execute tool calls and build tool result messages
-                for tc in resp.tool_calls:
-                    try:
-                        result_text = await self.mcp_bridge.call_tool(
-                            tc.name, tc.arguments
-                        )
-                        is_error = False
-                    except Exception as exc:
-                        result_text = f"Error: {exc}"
-                        is_error = True
-
-                    tool_log.append({
-                        "round": _round,
-                        "tool": tc.name,
-                        "arguments": tc.arguments,
-                        "result": result_text[:500],
-                        "is_error": is_error,
-                    })
-
-                    messages.append({
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tc.id,
-                                "content": result_text,
-                                "is_error": is_error,
-                            }
-                        ],
-                    })
-
-            # Judge extracts structured answer
-            extraction = await self.judge.extract(final_text) if final_text else Extraction()
-
+            extraction = Extraction()
+            error = f"timeout after {self.timeout}s"
         except Exception as exc:
+            _say(f"Error: {exc}")
             final_text = ""
             extraction = Extraction()
             error = str(exc)
@@ -694,6 +1076,91 @@ class Evaluator:
             latency_ms=latency_ms,
             error=error,
         )
+
+    async def _run_loop(
+        self,
+        pid: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_log: list[dict[str, Any]],
+        _say: Any,
+    ) -> tuple[str, Extraction, list[dict[str, Any]]]:
+        """Inner evaluation loop — model, tool rounds, judge."""
+        _say("Waiting for model response...")
+        final_text = ""
+        for _round in range(self.max_tool_rounds + 1):
+            gen_kwargs: dict[str, Any] = {"tools": tools}
+
+            # On the first round with force_tools, instruct the model to use tools
+            if _round == 0 and self.force_tools and tools:
+                gen_kwargs["system"] = _FORCE_TOOLS_SYSTEM
+                # Claude API: tool_choice=any forces at least one tool call
+                if isinstance(self.backend, ClaudeBackend):
+                    gen_kwargs["tool_choice"] = {"type": "any"}
+
+            resp = await self.backend.generate(messages, **gen_kwargs)
+
+            if resp.text:
+                final_text = resp.text
+
+            if not resp.tool_calls or not self.mcp_bridge:
+                break
+
+            tool_names = ", ".join(tc.name for tc in resp.tool_calls)
+            _say(f"Model requested tool(s): {tool_names}")
+
+            # Build assistant message with tool use
+            assistant_content: list[dict[str, Any]] = []
+            if resp.text:
+                assistant_content.append({"type": "text", "text": resp.text})
+            for tc in resp.tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.arguments,
+                })
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            # Execute tool calls and build tool result messages
+            for tc in resp.tool_calls:
+                _say(f"Calling tool '{tc.name}'...")
+                try:
+                    result_text = await self.mcp_bridge.call_tool(
+                        tc.name, tc.arguments
+                    )
+                    is_error = False
+                except Exception as exc:
+                    result_text = f"Error: {exc}"
+                    is_error = True
+                    _say(f"Tool '{tc.name}' failed: {exc}")
+
+                tool_log.append({
+                    "round": _round,
+                    "tool": tc.name,
+                    "arguments": tc.arguments,
+                    "result": result_text[:500],
+                    "is_error": is_error,
+                })
+
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tc.id,
+                            "content": result_text,
+                            "is_error": is_error,
+                        }
+                    ],
+                })
+
+            _say("Waiting for model response...")
+
+        # Judge extracts structured answer
+        _say("Extracting answer from response...")
+        extraction = await self.judge.extract(final_text) if final_text else Extraction()
+        return final_text, extraction, tool_log
 
 
 # ---------------------------------------------------------------------------
@@ -727,15 +1194,38 @@ class Runner:
         async def _eval_one(p: dict[str, Any]) -> EvalResult:
             nonlocal completed
             async with sem:
+                pid = p.get("problem_id", "?")
+                print(f"\n[{completed + 1}/{total}] {pid}", file=sys.stderr, flush=True)
+
                 r = await self.evaluator.evaluate(p, self.model_spec)
                 completed += 1
-                status = "PASS" if r.score_overall else "FAIL"
+
+                elapsed = f"{r.latency_ms / 1000:.1f}s"
+
                 if r.error:
-                    status = "ERR "
-                print(
-                    f"[{completed:>3}/{total}] {status}  {p['problem_id']}",
-                    file=sys.stderr,
-                )
+                    print(f"  ==>  ERROR  ({elapsed})  {r.error}", file=sys.stderr)
+                elif r.problem.get("must_fail", False):
+                    refused = "yes" if r.extraction.refused else "no"
+                    verdict = "PASS" if r.score_overall else "FAIL"
+                    print(
+                        f"  ==>  {verdict}  ({elapsed})  "
+                        f"should refuse: model {'refused' if r.extraction.refused else 'answered'}",
+                        file=sys.stderr,
+                    )
+                else:
+                    expected = r.problem.get("answer", {})
+                    exp_val = expected.get("value")
+                    exp_unit = expected.get("unit", "")
+                    tol = expected.get("tolerance_pct", 5.0)
+                    got_val = r.extraction.value
+                    got_unit = r.extraction.unit or ""
+                    verdict = "PASS" if r.score_overall else "FAIL"
+                    print(
+                        f"  ==>  {verdict}  ({elapsed})  "
+                        f"expected: {exp_val} {exp_unit} (+/-{tol}%)  "
+                        f"got: {got_val} {got_unit}",
+                        file=sys.stderr,
+                    )
                 return r
 
         tasks = [asyncio.create_task(_eval_one(p)) for p in problems]
@@ -745,7 +1235,7 @@ class Runner:
         lines = [_result_to_jsonl(r) for r in results]
         if output:
             output.write_text("\n".join(lines) + "\n")
-            print(f"\nResults written to {output}", file=sys.stderr)
+            log.info("results written to %s", output)
         else:
             for line in lines:
                 print(line)
@@ -908,6 +1398,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     parser.add_argument(
+        "-v", "--verbose",
+        action="count",
+        default=0,
+        help="Increase log verbosity (-v for INFO, -vv for DEBUG)",
+    )
+    parser.add_argument(
         "-m", "--model",
         required=True,
         help="Model spec as backend:model (e.g. claude:claude-haiku-4-5-20251001, ollama:llama3.2:3b)",
@@ -926,6 +1422,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-url",
         default=None,
         help="MCP server URL for SSE transport (default: spawn stdio server)",
+    )
+    parser.add_argument(
+        "--mcp-api-key",
+        default=None,
+        help="API key for MCP server authentication (sent as Bearer token)",
     )
     parser.add_argument(
         "-j",
@@ -950,6 +1451,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max problems to evaluate",
     )
     parser.add_argument(
+        "--num-ctx",
+        type=int,
+        default=None,
+        help="Ollama context window size (overrides model default)",
+    )
+    parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Stream model output to stderr in real time (useful for thinking models)",
+    )
+    parser.add_argument(
+        "--no-think",
+        action="store_true",
+        help="Disable thinking/chain-of-thought for models that support it (e.g. qwen3)",
+    )
+    parser.add_argument(
         "--filter-difficulty",
         default=None,
         help="Filter by difficulty tier (e.g. tier_1)",
@@ -970,10 +1487,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by must_fail (true/false)",
     )
     parser.add_argument(
+        "--force-tools",
+        action="store_true",
+        help="Force the model to use tools on the first round (Claude: tool_choice=any, all: system prompt)",
+    )
+    parser.add_argument(
         "--max-tool-rounds",
         type=int,
         default=10,
         help="Max tool call rounds per problem (default: 10)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120,
+        help="Per-problem timeout in seconds (default: 120)",
     )
     return parser
 
@@ -987,12 +1515,13 @@ async def async_main(args: argparse.Namespace) -> None:
         data_path = script_dir / "data" / "test.jsonl"
 
     if not data_path.exists():
-        print(f"Error: data file not found: {data_path}", file=sys.stderr)
+        log.error("data file not found: %s", data_path)
         sys.exit(1)
 
     # Load and filter problems
+    _say = lambda msg: print(msg, file=sys.stderr, flush=True)
+
     problems = load_problems(data_path)
-    print(f"Loaded {len(problems)} problems from {data_path}", file=sys.stderr)
 
     problems = filter_problems(
         problems,
@@ -1002,47 +1531,84 @@ async def async_main(args: argparse.Namespace) -> None:
         must_fail=args.filter_must_fail,
         limit=args.limit,
     )
-    print(f"After filtering: {len(problems)} problems", file=sys.stderr)
 
     if not problems:
-        print("No problems to evaluate.", file=sys.stderr)
+        _say("No problems matched the given filters.")
         sys.exit(0)
 
-    # Build backends
-    model_backend = make_backend(args.model)
-
     judge_spec = args.judge or args.model
-    judge_backend = make_backend(judge_spec)
+    condition = "tool-augmented" if args.tools else "bare"
+
+    # Header
+    _say("")
+    _say("=" * 60)
+    _say("UnitSafe Benchmark Runner")
+    _say("=" * 60)
+    _say(f"  Model:       {args.model}")
+    _say(f"  Judge:       {judge_spec}")
+    _say(f"  Mode:        {condition}")
+    _say(f"  Problems:    {len(problems)}")
+    _say(f"  Concurrency: {args.j}")
+    _say(f"  Timeout:     {args.timeout:.0f}s per problem")
+    if args.no_think:
+        _say(f"  Thinking:    disabled")
+    if args.force_tools:
+        _say(f"  Force tools: yes")
+    _say("")
+
+    # Build backends
+    model_backend = make_backend(
+        args.model, num_ctx=args.num_ctx, show_thinking=args.show_thinking,
+        think=not args.no_think,
+    )
+    judge_backend = make_backend(judge_spec, num_ctx=args.num_ctx)
     judge = Judge(judge_backend)
 
     # Preflight — verify backends are reachable before starting eval
-    preflight_targets: list[tuple[str, Any]] = [(args.model, model_backend)]
+    _say("Checking connectivity...")
+    preflight_targets: list[tuple[str, str, Any]] = [
+        ("Model", args.model, model_backend),
+    ]
     if judge_spec != args.model:
-        preflight_targets.append((judge_spec, judge_backend))
-    for spec, backend in preflight_targets:
-        print(f"Preflight check: {spec}...", file=sys.stderr, end=" ", flush=True)
+        preflight_targets.append(("Judge", judge_spec, judge_backend))
+    for label, spec, backend in preflight_targets:
+        _say(f"  {label} ({spec})...")
         try:
             await backend.preflight()
-            print("ok", file=sys.stderr)
+            _say(f"  {label} ({spec}) — ok")
         except RuntimeError as exc:
-            print("FAILED", file=sys.stderr)
-            print(f"Error: {exc}", file=sys.stderr)
+            _say(f"  {label} ({spec}) — FAILED")
+            _say(f"    {exc}")
             sys.exit(1)
+
+    # Validate: claude-code backend doesn't support tool use
+    if args.tools and isinstance(model_backend, ClaudeCodeBackend):
+        _say("ERROR: 'claude-code' backend does not support tool-augmented evaluation.")
+        _say("  The claude-code backend uses 'claude -p' which cannot make tool calls.")
+        _say("  Use 'claude:<model>' instead (requires ANTHROPIC_API_KEY).")
+        _say(f"  Example: -m claude:{args.model.partition(':')[2] or 'claude-haiku-4-5-20251001'}")
+        sys.exit(1)
 
     # MCP bridge
     mcp_bridge: MCPToolBridge | None = None
-    condition = "bare"
     if args.tools:
-        condition = "tools"
+        mcp_target = args.mcp_url or "ucon-mcp (stdio)"
+        _say(f"  MCP server ({mcp_target})...")
         mcp_bridge = MCPToolBridge()
-        if args.mcp_url:
-            print(f"Connecting to MCP server at {args.mcp_url}...", file=sys.stderr)
-            await mcp_bridge.connect_sse(args.mcp_url)
-        else:
-            print("Spawning MCP stdio server (ucon-mcp)...", file=sys.stderr)
-            await mcp_bridge.connect_stdio("ucon-mcp")
-        tool_count = len(mcp_bridge.tool_definitions)
-        print(f"MCP bridge ready: {tool_count} tools available", file=sys.stderr)
+        try:
+            if args.mcp_url:
+                await mcp_bridge.connect_url(args.mcp_url, api_key=args.mcp_api_key)
+            else:
+                await mcp_bridge.connect_stdio("ucon-mcp")
+            tool_count = len(mcp_bridge.tool_definitions)
+            _say(f"  MCP server ({mcp_target}) — ok, {tool_count} tools")
+        except RuntimeError as exc:
+            _say(f"  MCP server ({mcp_target}) — FAILED")
+            _say(f"    {exc}")
+            sys.exit(1)
+
+    _say("")
+    _say(f"Running {len(problems)} evaluations...")
 
     # Build evaluator and runner
     evaluator = Evaluator(
@@ -1051,6 +1617,8 @@ async def async_main(args: argparse.Namespace) -> None:
         mcp_bridge=mcp_bridge,
         max_tool_rounds=args.max_tool_rounds,
         condition=condition,
+        timeout=args.timeout,
+        force_tools=args.force_tools,
     )
 
     runner = Runner(evaluator, args.model, concurrency=args.j)
@@ -1067,6 +1635,17 @@ async def async_main(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(
+        args.verbose, logging.DEBUG
+    )
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-5s %(name)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+
     asyncio.run(async_main(args))
 
 
