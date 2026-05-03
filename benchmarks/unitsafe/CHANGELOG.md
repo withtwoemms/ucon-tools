@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Judge-free direct extraction for tool-augmented and bare evaluation modes
+  - `--judge` is now opt-in; when omitted, answers are extracted directly
+    from `ANSWER:` lines in model output and MCP tool results
+  - `_ANSWER_SYSTEM` prompt instructs the model to emit structured
+    `ANSWER: <number> <unit>` or `ANSWER: ERROR - <reason>` lines
+  - System prompt sent on every tool-use round (not just round 0),
+    ensuring the model sees the format instruction on the turn where it
+    writes its final answer
+  - Hybrid extraction cascade: `ANSWER:` line > `\boxed{}` > answer-section
+    marker > last number+unit in text, with tool-result unit matching
+  - Refusal detection via `check_dimensions` results, tool error types,
+    and keyword heuristics on model text
+
+### Changed
+
+- `--force-tools` flag removed; `tool_choice=any` (Claude) and tool-use
+  system prompt are now applied automatically when `--tools` is present
+- `_TOOLS_SYSTEM` prompt composed from tool-use instructions and
+  `_ANSWER_SYSTEM` format directive
+
 ## [0.1.1] - 2026-04-23
 
 ### Fixed
