@@ -709,13 +709,20 @@ class MCPToolBridge:
         return "\n".join(parts) if parts else ""
 
 
-_FORCE_TOOLS_SYSTEM = """\
+_ANSWER_SYSTEM = """\
+Present your FINAL answer on its own line in exactly this format:
+ANSWER: <number> <unit>
+
+If the conversion is physically impossible (e.g. incompatible dimensions), respond:
+ANSWER: ERROR - <reason>\
+"""
+
+_TOOLS_SYSTEM = """\
 You are being evaluated on your ability to use tools for unit conversion.
 You MUST use the provided tools to perform any unit conversions or lookups.
 Do NOT solve problems from memory or mental math.
 Always call at least one tool before giving your final answer.
-After receiving tool results, present your final answer clearly.\
-"""
+""" + _ANSWER_SYSTEM
 
 
 # ---------------------------------------------------------------------------
@@ -733,30 +740,178 @@ _REFUSAL_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Matches a number (with optional sign, scientific notation) followed by a
-# unit-like token.  Captures (number, unit).
-_NUMBER_UNIT_RE = re.compile(
-    r"(?:=\s*|is\s+|:\s*|\*\*)"
-    r"(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)"
-    r"\s+"
-    r"([A-Za-z\u00b0\u00b2\u00b3\u2070-\u209f][A-Za-z0-9\u00b0\u00b2\u00b3\u2070-\u209f·*^/()-]*)"
+# Structured ANSWER: line — highest-priority extraction target.
+# Matches "ANSWER: <number> <unit>" or "ANSWER: ERROR - <reason>".
+_ANSWER_LINE_RE = re.compile(
+    r"ANSWER:\s*(?:ERROR\s*[-–—]\s*(.+)|"
+    r"(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)\s+"
+    r"([^\n]+))",
+    re.IGNORECASE | re.MULTILINE,
 )
 
+# Matches a number (with optional sign, scientific notation) followed by a
+# unit-like token.  Captures (number, unit).  Character class includes
+# middle-dot (·, U+00B7) for units like J/(mol·K).
+_NUMBER_UNIT_RE = re.compile(
+    r"(?:=\s*|≈\s*|≅\s*|is\s+|:\s*|\*\*|→\s*|\\approx\s*)"
+    r"(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)"
+    r"\s*"
+    r"([A-Za-z\u00b0°\u00b7][A-Za-z0-9\u00b0\u00b2\u00b3°\u00b7·*^/()-]*)",
+)
 
-def _extract_from_tools(
-    tool_log: list[dict[str, Any]],
-    final_text: str,
-) -> Extraction:
-    """Extract a structured answer from tool results and model text.
+# Boxed answer pattern (LaTeX \boxed{...})
+_BOXED_RE = re.compile(
+    r"\\boxed\{(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)"
+    r"\s*"
+    r"([^}]*)\}",
+)
 
-    Used in judge-free mode (``--tools`` without ``--judge``).
+# Answer-section markers — lines containing these typically precede or
+# contain the model's final answer.
+_ANSWER_MARKER_RE = re.compile(
+    r"(?:^|\n)\s*(?:\*\*)?(?:(?:final\s+)?answer|therefore|thus|result|"
+    r"hence|in\s+conclusion|so\s+the|the\s+(?:change|entropy|energy|"
+    r"value|rate|dose|concentration|pressure|force|power|voltage|"
+    r"temperature|volume|mass|density|speed|velocity|acceleration|"
+    r"frequency|wavelength|resistance|current|flux|amount|area)"
+    r"(?:\s+\w+){0,3}\s+is)",
+    re.IGNORECASE,
+)
+
+# LaTeX command fragments to strip from captured unit strings.
+# The backslash may or may not survive regex capture, so match with
+# an optional leading backslash.
+_LATEX_UNIT_CLEANUP_RE = re.compile(
+    r"\\?(?:text|mathrm|mathit|operatorname|unit|si)\{?\s*",
+)
+
+# Words that should never be captured as unit tokens.
+_NOT_A_UNIT = {
+    "so", "that", "where", "which", "since", "because", "when", "then",
+    "and", "but", "or", "if", "not", "no", "by", "for", "from", "to",
+    "the", "this", "it", "as", "be", "of", "in", "on", "at", "an", "a",
+    "we", "I", "my", "its", "per", "into", "with",
+}
+
+
+def _clean_unit(raw: str) -> str | None:
+    """Normalise a captured unit token.
+
+    Strips LaTeX wrappers, trailing punctuation, fixes unbalanced parens,
+    and normalises middle-dot to ``*``.
     """
-    value: float | None = None
-    unit: str | None = None
-    refused = False
+    u = raw.rstrip(".,;:)*_")
+    # Strip LaTeX command wrappers
+    u = _LATEX_UNIT_CLEANUP_RE.sub("", u)
+    u = u.replace("{", "").replace("}", "")
+    # Normalise middle-dot to *
+    u = u.replace("\u00b7", "*").replace("·", "*")
+    # Fix unbalanced parentheses
+    opens = u.count("(")
+    closes = u.count(")")
+    if opens > closes:
+        u += ")" * (opens - closes)
+    elif closes > opens:
+        u = u.rstrip(")")
+        # re-add only the balanced ones
+        u += ")" * opens
+    u = u.strip()
+    return u or None
 
-    # -- Value/unit: last successful convert or compute result ---------------
-    for entry in reversed(tool_log):
+
+def _is_valid_unit_token(u: str) -> bool:
+    """Return True if `u` looks like a plausible unit, not a prose word."""
+    cleaned = _clean_unit(u)
+    if not cleaned:
+        return False
+    base = cleaned.split("/")[0].split("*")[0].split("^")[0].rstrip("0123456789²³")
+    return base.lower() not in _NOT_A_UNIT and len(base) > 0
+
+
+def _check_answer_line(final_text: str) -> tuple[float | None, str | None, bool]:
+    """Check for a structured ``ANSWER:`` line.
+
+    Returns ``(value, unit, is_error)``.  If an ``ANSWER: ERROR`` line is
+    found, ``is_error`` is True and value/unit are None.
+    """
+    if not final_text:
+        return None, None, False
+    matches = list(_ANSWER_LINE_RE.finditer(final_text))
+    if not matches:
+        return None, None, False
+    m = matches[-1]  # last ANSWER: line wins
+    if m.group(1):  # ERROR case
+        return None, None, True
+    try:
+        val = float(m.group(2).replace(",", ""))
+        u = _clean_unit(m.group(3).strip()) if m.group(3) else None
+        return val, u, False
+    except ValueError:
+        return None, None, False
+
+
+def _extract_from_text(final_text: str) -> tuple[float | None, str | None]:
+    """Extract (value, unit) from the model's final text.
+
+    Priority order:
+    1. Structured ``ANSWER: <number> <unit>`` line
+    2. LaTeX ``\\boxed{...}``
+    3. Answer-section marker + last number+unit match
+    4. Last valid number+unit match in full text
+    """
+    if not final_text:
+        return None, None
+
+    # Priority 1: ANSWER: line
+    val, unit, is_error = _check_answer_line(final_text)
+    if val is not None:
+        return val, unit
+    # (is_error handled by caller via _check_answer_line directly)
+
+    # Priority 2: \boxed{...}
+    boxed = list(_BOXED_RE.finditer(final_text))
+    if boxed:
+        m = boxed[-1]
+        try:
+            val = float(m.group(1).replace(",", ""))
+            u = _clean_unit(m.group(2).strip().strip("\\").strip())
+            return val, u
+        except ValueError:
+            pass
+
+    # Priority 3: answer-section match — restrict search to text after the
+    # last answer marker (if any).
+    marker_match = None
+    for mm in _ANSWER_MARKER_RE.finditer(final_text):
+        marker_match = mm
+    if marker_match:
+        tail = final_text[marker_match.start():]
+        matches = list(_NUMBER_UNIT_RE.finditer(tail))
+        for m in reversed(matches):
+            if _is_valid_unit_token(m.group(2)):
+                try:
+                    return float(m.group(1).replace(",", "")), _clean_unit(m.group(2))
+                except ValueError:
+                    continue
+
+    # Priority 4: last valid number+unit match in full text
+    matches = list(_NUMBER_UNIT_RE.finditer(final_text))
+    for m in reversed(matches):
+        if _is_valid_unit_token(m.group(2)):
+            try:
+                return float(m.group(1).replace(",", "")), _clean_unit(m.group(2))
+            except ValueError:
+                continue
+
+    return None, None
+
+
+def _collect_tool_results(
+    tool_log: list[dict[str, Any]],
+) -> list[tuple[float, str | None]]:
+    """Return all (quantity, unit) pairs from successful convert/compute calls."""
+    results: list[tuple[float, str | None]] = []
+    for entry in tool_log:
         if entry.get("tool") not in _ANSWER_TOOLS:
             continue
         if entry.get("is_error"):
@@ -770,12 +925,49 @@ def _extract_from_tools(
         q = result.get("quantity")
         u = result.get("unit")
         if q is not None:
-            value = float(q)
-            unit = u
-            break
+            results.append((float(q), u))
+    return results
+
+
+def _match_tool_unit(
+    value: float,
+    tool_results: list[tuple[float, str | None]],
+) -> str | None:
+    """Find a tool result whose quantity matches `value` and return its unit.
+
+    Matches within 0.1% relative tolerance to handle minor rounding
+    differences between the model's stated value and the tool's output.
+    """
+    if value == 0:
+        for tq, tu in tool_results:
+            if abs(tq) < 1e-9 and tu:
+                return tu
+        return None
+    for tq, tu in reversed(tool_results):
+        if tu and abs(tq - value) / abs(value) < 0.001:
+            return tu
+    return None
+
+
+def _extract_from_tools(
+    tool_log: list[dict[str, Any]],
+    final_text: str,
+) -> Extraction:
+    """Extract a structured answer from tool results and model text.
+
+    Used in judge-free mode (``--tools`` without ``--judge``).
+
+    Hybrid strategy:
+    - **Value**: prefer the model's final text (captures synthesised
+      multi-step answers that tools only computed parts of).
+    - **Unit**: if the text-extracted value matches a tool result, use
+      the tool's clean unit string (avoids LaTeX artifacts, prose names,
+      and truncated compound units from regex capture).
+    - Fall back to the last tool result when text extraction finds nothing.
+    """
+    refused = False
 
     # -- Refusal detection ---------------------------------------------------
-    # Signal 1: check_dimensions returned compatible=false
     has_dim_incompatible = False
     has_tool_error = False
     for entry in tool_log:
@@ -788,30 +980,40 @@ def _extract_from_tools(
         if "error" in result:
             has_tool_error = True
 
-    # Signal 2: refusal language in model text
+    # Signal 2: structured ANSWER: ERROR line
+    _, _, has_answer_error = _check_answer_line(final_text)
+    if has_answer_error:
+        return Extraction(refused=True)
+
+    # Signal 3: refusal language in model text
     has_refusal_text = bool(_REFUSAL_KEYWORDS.search(final_text)) if final_text else False
 
-    # Combine: refuse if keywords present and no successful numeric answer,
-    # or if dimensions flagged incompatible and no successful answer.
-    if value is None and (has_refusal_text or has_dim_incompatible):
-        refused = True
-    elif has_refusal_text and has_dim_incompatible and value is not None:
-        # Model got a tool result but also expressed doubt — trust the text
-        refused = True
-        value = None
-        unit = None
+    if has_refusal_text or has_dim_incompatible:
+        text_val, _ = _extract_from_text(final_text)
+        if text_val is None:
+            return Extraction(refused=True)
+        if has_dim_incompatible and has_refusal_text:
+            return Extraction(refused=True)
 
-    # -- Regex fallback for value/unit when no tool result -------------------
-    if value is None and not refused and final_text:
-        m = _NUMBER_UNIT_RE.search(final_text)
-        if m:
-            try:
-                value = float(m.group(1).replace(",", ""))
-                unit = m.group(2).rstrip(".,;:)")
-            except ValueError:
-                pass
+    # -- Collect all tool results for unit matching --------------------------
+    tool_results = _collect_tool_results(tool_log)
 
-    return Extraction(value=value, unit=unit, refused=refused)
+    # -- Value/unit extraction -----------------------------------------------
+    # Primary: model's final text for the value
+    text_value, text_unit = _extract_from_text(final_text)
+
+    if text_value is not None:
+        # Try to find a matching tool result for a cleaner unit string
+        tool_unit = _match_tool_unit(text_value, tool_results)
+        unit = tool_unit if tool_unit else text_unit
+        return Extraction(value=text_value, unit=unit, refused=refused)
+
+    # Fallback: last successful tool result
+    if tool_results:
+        value, unit = tool_results[-1]
+        return Extraction(value=value, unit=unit, refused=refused)
+
+    return Extraction(refused=refused)
 
 
 # ---------------------------------------------------------------------------
@@ -1133,7 +1335,6 @@ class Evaluator:
         max_tool_rounds: int = 10,
         condition: str = "bare",
         timeout: float = 120,
-        force_tools: bool = False,
     ):
         self.backend = backend
         self.judge = judge
@@ -1141,7 +1342,6 @@ class Evaluator:
         self.max_tool_rounds = max_tool_rounds
         self.condition = condition
         self.timeout = timeout
-        self.force_tools = force_tools
 
     async def evaluate(
         self,
@@ -1214,12 +1414,12 @@ class Evaluator:
         for _round in range(self.max_tool_rounds + 1):
             gen_kwargs: dict[str, Any] = {"tools": tools}
 
-            # On the first round with force_tools, instruct the model to use tools
-            if _round == 0 and self.force_tools and tools:
-                gen_kwargs["system"] = _FORCE_TOOLS_SYSTEM
-                # Claude API: tool_choice=any forces at least one tool call
-                if isinstance(self.backend, ClaudeBackend):
+            if tools:
+                gen_kwargs["system"] = _TOOLS_SYSTEM
+                if _round == 0 and isinstance(self.backend, ClaudeBackend):
                     gen_kwargs["tool_choice"] = {"type": "any"}
+            elif self.judge is None:
+                gen_kwargs["system"] = _ANSWER_SYSTEM
 
             resp = await self.backend.generate(messages, **gen_kwargs)
 
@@ -1614,11 +1814,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by must_fail (true/false)",
     )
     parser.add_argument(
-        "--force-tools",
-        action="store_true",
-        help="Force the model to use tools on the first round (Claude: tool_choice=any, all: system prompt)",
-    )
-    parser.add_argument(
         "--max-tool-rounds",
         type=int,
         default=10,
@@ -1663,9 +1858,9 @@ async def async_main(args: argparse.Namespace) -> None:
         _say("No problems matched the given filters.")
         sys.exit(0)
 
-    # Judge is optional when tools are enabled (extract from tool results)
-    use_judge = args.judge is not None or not args.tools
-    judge_spec = (args.judge or args.model) if use_judge else None
+    # Judge only when explicitly requested via --judge
+    use_judge = args.judge is not None
+    judge_spec = args.judge if use_judge else None
     condition = "tool-augmented" if args.tools else "bare"
 
     # Header
@@ -1674,15 +1869,13 @@ async def async_main(args: argparse.Namespace) -> None:
     _say("UnitSafe Benchmark Runner")
     _say("=" * 60)
     _say(f"  Model:       {args.model}")
-    _say(f"  Judge:       {judge_spec or 'none (tool extraction)'}")
+    _say(f"  Judge:       {judge_spec or 'none (direct extraction)'}")
     _say(f"  Mode:        {condition}")
     _say(f"  Problems:    {len(problems)}")
     _say(f"  Concurrency: {args.j}")
     _say(f"  Timeout:     {args.timeout:.0f}s per problem")
     if args.no_think:
         _say(f"  Thinking:    disabled")
-    if args.force_tools:
-        _say(f"  Force tools: yes")
     _say("")
 
     # Build backends
@@ -1749,7 +1942,6 @@ async def async_main(args: argparse.Namespace) -> None:
         max_tool_rounds=args.max_tool_rounds,
         condition=condition,
         timeout=args.timeout,
-        force_tools=args.force_tools,
     )
 
     runner = Runner(evaluator, args.model, concurrency=args.j)
