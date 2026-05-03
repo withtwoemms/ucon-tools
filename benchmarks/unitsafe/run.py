@@ -6,6 +6,10 @@ reasoning benchmark.  Supports Claude and Ollama backends, a configurable
 judge model for format-agnostic answer extraction, and optional MCP
 tool-augmented evaluation.
 
+When ``--tools`` is used without ``--judge``, answers are extracted directly
+from MCP tool results (``convert``/``compute`` output) instead of a judge
+model, eliminating judge-induced scoring noise.
+
 Usage examples
 --------------
 # Bare Claude evaluation
@@ -14,8 +18,11 @@ python run.py -m claude:claude-sonnet-4-20250514
 # Ollama model evaluated, Claude as judge
 python run.py -m ollama:llama3.2:3b --judge claude:claude-haiku-4-5-20251001
 
-# Tool-augmented, remote MCP server
-python run.py -m claude:claude-haiku-4-5-20251001 --tools --mcp-url https://mcp.ucon.dev/mcp/inst_abc/mcp
+# Tool-augmented with judge
+python run.py -m claude:claude-haiku-4-5-20251001 --tools --judge claude:claude-haiku-4-5-20251001
+
+# Tool-augmented without judge (tool extraction)
+python run.py -m claude:claude-haiku-4-5-20251001 --tools
 
 # Quick 10-problem smoke test
 python run.py -m claude:claude-haiku-4-5-20251001 --tools --limit 10
@@ -25,13 +32,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import re
+import shutil
 import sys
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+log = logging.getLogger("unitsafe")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +143,7 @@ class ClaudeBackend:
         *,
         tools: list[dict[str, Any]] | None = None,
         system: str | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> Message:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -142,7 +154,11 @@ class ClaudeBackend:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
 
+        log.debug("claude request model=%s messages=%d tools=%d",
+                  self.model, len(messages), len(tools or []))
         resp = await self.client.messages.create(**kwargs)
 
         text_parts: list[str] = []
@@ -155,6 +171,9 @@ class ClaudeBackend:
                     ToolCall(id=block.id, name=block.name, arguments=block.input)
                 )
 
+        log.debug("claude response text_len=%d tool_calls=%d usage=%s",
+                  sum(len(t) for t in text_parts), len(tool_calls),
+                  getattr(resp, "usage", None))
         return Message(
             text="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
@@ -162,10 +181,13 @@ class ClaudeBackend:
 
 
 class OllamaBackend:
-    """Wraps ``ollama.chat`` via ``asyncio.to_thread``."""
+    """Wraps ``ollama.Client`` with queue-based async bridge."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, *, num_ctx: int | None = None, show_thinking: bool = False, think: bool = True):
         self.model = model
+        self.num_ctx = num_ctx
+        self.show_thinking = show_thinking
+        self.think = think
 
     async def preflight(self) -> None:
         """Verify Ollama is running and the model is available."""
@@ -179,8 +201,6 @@ class OllamaBackend:
             ) from exc
 
         available = [m.model for m in models.models]
-        # Ollama normalises tags: "qwen3:0.6b" may appear as "qwen3:0.6b"
-        # or with a default tag appended.  Check prefix match.
         if not any(
             m == self.model or m.startswith(self.model + ":")
             for m in available
@@ -197,6 +217,7 @@ class OllamaBackend:
         *,
         tools: list[dict[str, Any]] | None = None,
         system: str | None = None,
+        tool_choice: dict[str, Any] | None = None,  # ignored by Ollama
     ) -> Message:
         import ollama
 
@@ -222,15 +243,167 @@ class OllamaBackend:
             "model": self.model,
             "messages": ollama_msgs,
         }
+        if not self.think:
+            kwargs["think"] = False
+        if self.num_ctx:
+            kwargs["options"] = {"num_ctx": self.num_ctx}
         if tools:
             ollama_tools = _to_ollama_tools(tools)
             if ollama_tools:
                 kwargs["tools"] = ollama_tools
 
-        resp = await asyncio.to_thread(ollama.chat, **kwargs)
+        log.debug("ollama request model=%s messages=%d tools=%d",
+                  self.model, len(ollama_msgs), len(kwargs.get("tools", [])))
 
-        text = resp.get("message", {}).get("content") or None
-        raw_tool_calls = resp.get("message", {}).get("tool_calls") or []
+        text_chunks: list[str] = []
+        raw_tool_calls: list[Any] = []
+        token_count = 0
+        thinking_count = 0
+        first_token_at: float | None = None
+        t_start = time.monotonic()
+        show = self.show_thinking
+        in_thinking = False
+
+        # Use a queue to bridge sync streaming thread → async event loop.
+        # This lets the heartbeat run between chunks AND lets asyncio
+        # cancellation close the HTTP client to stop the thread.
+        import queue
+        _SENTINEL = object()
+        chunk_q: queue.Queue = queue.Queue()
+        sync_client = ollama.Client()
+
+        def _stream_thread() -> None:
+            try:
+                for chunk in sync_client.chat(**kwargs, stream=True):
+                    chunk_q.put(chunk)
+                chunk_q.put(_SENTINEL)
+            except Exception as exc:
+                chunk_q.put(exc)
+
+        thread = __import__("threading").Thread(target=_stream_thread, daemon=True)
+        thread.start()
+
+        if show:
+            print("       ┌── model output ──", file=sys.stderr, flush=True)
+
+        # Consume chunks from the queue with periodic heartbeats
+        heartbeat_interval = 10
+        try:
+            while True:
+                try:
+                    item = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: chunk_q.get(timeout=heartbeat_interval),
+                    )
+                except Exception:
+                    # queue.Empty on timeout — print heartbeat
+                    elapsed = time.monotonic() - t_start
+                    if token_count == 0 and thinking_count == 0:
+                        print(
+                            f"       Still waiting for model... ({elapsed:.0f}s elapsed)",
+                            file=sys.stderr, flush=True,
+                        )
+                    elif thinking_count > 0 and token_count == 0 and not show:
+                        print(
+                            f"       Still thinking... ({elapsed:.0f}s, {thinking_count} thinking tokens so far)",
+                            file=sys.stderr, flush=True,
+                        )
+                    continue
+
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+
+                chunk = item
+                msg = chunk.message
+                thinking = getattr(msg, "thinking", None) or ""
+                token = msg.content or ""
+
+                if thinking:
+                    thinking_count += 1
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        if show:
+                            print("       (thinking) ", end="", file=sys.stderr, flush=True)
+                        else:
+                            wait = first_token_at - t_start
+                            print(
+                                f"       Model is thinking... (first token after {wait:.1f}s)",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        in_thinking = True
+                    if show:
+                        print(thinking, end="", file=sys.stderr, flush=True)
+
+                if token:
+                    if in_thinking and show:
+                        print(
+                            f"\n       (done thinking, {thinking_count} tokens)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        print("       ", end="", file=sys.stderr, flush=True)
+                        in_thinking = False
+                    text_chunks.append(token)
+                    token_count += 1
+                    if show:
+                        print(token, end="", file=sys.stderr, flush=True)
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        if not show:
+                            wait = first_token_at - t_start
+                            print(
+                                f"       First token after {wait:.1f}s, generating...",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    if not show and token_count % 100 == 0:
+                        elapsed = time.monotonic() - first_token_at
+                        tps = token_count / elapsed if elapsed > 0 else 0
+                        print(
+                            f"       ... {token_count} tokens ({tps:.0f} tok/s)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+
+                tc = getattr(msg, "tool_calls", None)
+                if tc:
+                    raw_tool_calls.extend(tc)
+        except (asyncio.CancelledError, Exception):
+            # On cancellation (timeout), close the sync client's httpx session
+            # to abort the in-flight HTTP request and unblock the thread
+            try:
+                sync_client._client.close()
+            except Exception:
+                pass
+            raise
+
+        text = "".join(text_chunks) or None
+        elapsed = time.monotonic() - t_start
+        total_tokens = token_count + thinking_count
+        thinking_note = f" ({thinking_count} thinking + {token_count} content)" if thinking_count > 0 else ""
+        if show and total_tokens > 0:
+            print(
+                f"\n       └── {total_tokens} tokens in {elapsed:.1f}s{thinking_note}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif total_tokens > 0:
+            gen_time = elapsed - ((first_token_at or t_start) - t_start)
+            tps = total_tokens / gen_time if gen_time > 0 else 0
+            print(
+                f"       Done: {total_tokens} tokens in {elapsed:.1f}s ({tps:.0f} tok/s){thinking_note}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"       Model returned empty response after {elapsed:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+
         tool_calls: list[ToolCall] = []
         for i, tc in enumerate(raw_tool_calls):
             fn = tc.get("function", {})
@@ -270,6 +443,7 @@ class ClaudeCodeBackend:
         *,
         tools: list[dict[str, Any]] | None = None,
         system: str | None = None,
+        tool_choice: dict[str, Any] | None = None,  # not supported via CLI
     ) -> Message:
         # Build the prompt from messages — claude -p takes a single text prompt
         parts: list[str] = []
@@ -291,18 +465,28 @@ class ClaudeCodeBackend:
         if self.model:
             cmd.extend(["--model", self.model])
 
+        log.debug("claude-code request model=%s prompt_len=%d",
+                  self.model or "(default)", len(prompt))
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.wait()
+            raise
 
         if proc.returncode != 0:
             err = stderr.decode().strip()
+            log.warning("claude-code exit=%d stderr=%s", proc.returncode, err)
             return Message(text=f"[claude-code error: {err}]")
 
-        return Message(text=stdout.decode().strip())
+        text = stdout.decode().strip()
+        log.debug("claude-code response text_len=%d", len(text))
+        return Message(text=text)
 
 
 def _to_ollama_tools(
@@ -322,7 +506,13 @@ def _to_ollama_tools(
     return result
 
 
-def make_backend(spec: str) -> ModelBackend:
+def make_backend(
+    spec: str,
+    *,
+    num_ctx: int | None = None,
+    show_thinking: bool = False,
+    think: bool = True,
+) -> ModelBackend:
     """Parse a ``backend:model`` spec and return the corresponding backend.
 
     Specs use ``backend:model`` format.  For ``claude-code``, the model
@@ -343,7 +533,7 @@ def make_backend(spec: str) -> ModelBackend:
     if backend == "claude":
         return ClaudeBackend(model)
     elif backend == "ollama":
-        return OllamaBackend(model)
+        return OllamaBackend(model, num_ctx=num_ctx, show_thinking=show_thinking, think=think)
     else:
         raise ValueError(
             f"Unknown backend {backend!r} — supported: claude, claude-code, ollama"
@@ -369,28 +559,123 @@ class MCPToolBridge:
         self._cm: Any = None
         self._session_cm: Any = None
 
-    async def connect_stdio(self, command: str, args: list[str] | None = None) -> None:
+    async def connect_stdio(
+        self, command: str, args: list[str] | None = None, *, timeout: float = 30,
+    ) -> None:
+        if not shutil.which(command):
+            raise RuntimeError(
+                f"MCP server command {command!r} not found on PATH. "
+                f"Install it with:  uv sync --extra mcp"
+            )
+
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
         params = StdioServerParameters(command=command, args=args or [])
         self._cm = stdio_client(params)
-        self._read, self._write = await self._cm.__aenter__()
-        self._session_cm = ClientSession(self._read, self._write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
-        await self._fetch_tools()
+        try:
+            self._read, self._write = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=timeout,
+            )
+            self._session_cm = ClientSession(self._read, self._write)
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(), timeout=timeout,
+            )
+            await asyncio.wait_for(self._session.initialize(), timeout=timeout)
+            await asyncio.wait_for(self._fetch_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(
+                f"MCP server {command!r} did not respond within {timeout}s. "
+                f"Verify it starts correctly by running: {command}"
+            )
 
-    async def connect_sse(self, url: str) -> None:
+    async def connect_url(
+        self, url: str, *, api_key: str | None = None, timeout: float = 30,
+    ) -> None:
+        """Connect to a remote MCP server.
+
+        Tries Streamable HTTP first, falls back to SSE.
+        """
+        headers: dict[str, str] | None = None
+        if api_key:
+            headers = {"Authorization": f"Bearer {api_key}"}
+
+        # Try Streamable HTTP first (default for mcp SDK >=1.8)
+        try:
+            await self._connect_streamable_http(url, headers=headers, timeout=timeout)
+            return
+        except Exception as streamable_err:
+            log.debug("Streamable HTTP failed: %s — falling back to SSE", streamable_err)
+            # Reset any partial state
+            await self.close()
+            self._session = None
+            self._read = None
+            self._write = None
+            self._cm = None
+            self._session_cm = None
+
+        # Fall back to SSE
+        try:
+            await self._connect_sse(url, headers=headers, timeout=timeout)
+        except Exception as sse_err:
+            raise RuntimeError(
+                f"Could not connect to MCP server at {url}. "
+                f"Streamable HTTP failed: {streamable_err}  |  SSE failed: {sse_err}"
+            ) from sse_err
+
+    async def _connect_streamable_http(
+        self, url: str, *, headers: dict[str, str] | None = None, timeout: float = 30,
+    ) -> None:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        self._cm = streamablehttp_client(url, headers=headers)
+        try:
+            read, write, _get_session_id = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"Streamable HTTP server at {url} did not respond within {timeout}s")
+
+        self._read, self._write = read, write
+        self._session_cm = ClientSession(self._read, self._write)
+        try:
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(), timeout=timeout,
+            )
+            await asyncio.wait_for(self._session.initialize(), timeout=timeout)
+            await asyncio.wait_for(self._fetch_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"MCP session init timed out after {timeout}s")
+
+    async def _connect_sse(
+        self, url: str, *, headers: dict[str, str] | None = None, timeout: float = 30,
+    ) -> None:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
-        self._cm = sse_client(url)
-        self._read, self._write = await self._cm.__aenter__()
+        self._cm = sse_client(url, headers=headers)
+        try:
+            self._read, self._write = await asyncio.wait_for(
+                self._cm.__aenter__(), timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"SSE server at {url} did not respond within {timeout}s")
+
         self._session_cm = ClientSession(self._read, self._write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
-        await self._fetch_tools()
+        try:
+            self._session = await asyncio.wait_for(
+                self._session_cm.__aenter__(), timeout=timeout,
+            )
+            await asyncio.wait_for(self._session.initialize(), timeout=timeout)
+            await asyncio.wait_for(self._fetch_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise RuntimeError(f"MCP session init timed out after {timeout}s")
 
     async def close(self) -> None:
         if self._session_cm:
@@ -422,6 +707,313 @@ class MCPToolBridge:
             else:
                 parts.append(str(item))
         return "\n".join(parts) if parts else ""
+
+
+_ANSWER_SYSTEM = """\
+Present your FINAL answer on its own line in exactly this format:
+ANSWER: <number> <unit>
+
+If the conversion is physically impossible (e.g. incompatible dimensions), respond:
+ANSWER: ERROR - <reason>\
+"""
+
+_TOOLS_SYSTEM = """\
+You are being evaluated on your ability to use tools for unit conversion.
+You MUST use the provided tools to perform any unit conversions or lookups.
+Do NOT solve problems from memory or mental math.
+Always call at least one tool before giving your final answer.
+""" + _ANSWER_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# Tool-based extraction (judge-free mode)
+# ---------------------------------------------------------------------------
+
+_ANSWER_TOOLS = {"convert", "compute"}
+
+_REFUSAL_KEYWORDS = re.compile(
+    r"cannot\s+(?:be\s+)?convert|not\s+compatible|impossible|"
+    r"dimensionally\s+incompatible|cannot\s+compare|"
+    r"not\s+(?:a\s+)?valid|invalid\s+conversion|"
+    r"refuse|not\s+possible|incompatible\s+dimensions|"
+    r"different\s+(?:physical\s+)?quantit",
+    re.IGNORECASE,
+)
+
+# Structured ANSWER: line — highest-priority extraction target.
+# Matches "ANSWER: <number> <unit>" or "ANSWER: ERROR - <reason>".
+_ANSWER_LINE_RE = re.compile(
+    r"ANSWER:\s*(?:ERROR\s*[-–—]\s*(.+)|"
+    r"(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)\s+"
+    r"([^\n]+))",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Matches a number (with optional sign, scientific notation) followed by a
+# unit-like token.  Captures (number, unit).  Character class includes
+# middle-dot (·, U+00B7) for units like J/(mol·K).
+_NUMBER_UNIT_RE = re.compile(
+    r"(?:=\s*|≈\s*|≅\s*|is\s+|:\s*|\*\*|→\s*|\\approx\s*)"
+    r"(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)"
+    r"\s*"
+    r"([A-Za-z\u00b0°\u00b7][A-Za-z0-9\u00b0\u00b2\u00b3°\u00b7·*^/()-]*)",
+)
+
+# Boxed answer pattern (LaTeX \boxed{...})
+_BOXED_RE = re.compile(
+    r"\\boxed\{(-?[\d][\d,]*\.?\d*(?:[eE][+-]?\d+)?)"
+    r"\s*"
+    r"([^}]*)\}",
+)
+
+# Answer-section markers — lines containing these typically precede or
+# contain the model's final answer.
+_ANSWER_MARKER_RE = re.compile(
+    r"(?:^|\n)\s*(?:\*\*)?(?:(?:final\s+)?answer|therefore|thus|result|"
+    r"hence|in\s+conclusion|so\s+the|the\s+(?:change|entropy|energy|"
+    r"value|rate|dose|concentration|pressure|force|power|voltage|"
+    r"temperature|volume|mass|density|speed|velocity|acceleration|"
+    r"frequency|wavelength|resistance|current|flux|amount|area)"
+    r"(?:\s+\w+){0,3}\s+is)",
+    re.IGNORECASE,
+)
+
+# LaTeX command fragments to strip from captured unit strings.
+# The backslash may or may not survive regex capture, so match with
+# an optional leading backslash.
+_LATEX_UNIT_CLEANUP_RE = re.compile(
+    r"\\?(?:text|mathrm|mathit|operatorname|unit|si)\{?\s*",
+)
+
+# Words that should never be captured as unit tokens.
+_NOT_A_UNIT = {
+    "so", "that", "where", "which", "since", "because", "when", "then",
+    "and", "but", "or", "if", "not", "no", "by", "for", "from", "to",
+    "the", "this", "it", "as", "be", "of", "in", "on", "at", "an", "a",
+    "we", "I", "my", "its", "per", "into", "with",
+}
+
+
+def _clean_unit(raw: str) -> str | None:
+    """Normalise a captured unit token.
+
+    Strips LaTeX wrappers, trailing punctuation, fixes unbalanced parens,
+    and normalises middle-dot to ``*``.
+    """
+    u = raw.rstrip(".,;:)*_")
+    # Strip LaTeX command wrappers
+    u = _LATEX_UNIT_CLEANUP_RE.sub("", u)
+    u = u.replace("{", "").replace("}", "")
+    # Normalise middle-dot to *
+    u = u.replace("\u00b7", "*").replace("·", "*")
+    # Fix unbalanced parentheses
+    opens = u.count("(")
+    closes = u.count(")")
+    if opens > closes:
+        u += ")" * (opens - closes)
+    elif closes > opens:
+        u = u.rstrip(")")
+        # re-add only the balanced ones
+        u += ")" * opens
+    u = u.strip()
+    return u or None
+
+
+def _is_valid_unit_token(u: str) -> bool:
+    """Return True if `u` looks like a plausible unit, not a prose word."""
+    cleaned = _clean_unit(u)
+    if not cleaned:
+        return False
+    base = cleaned.split("/")[0].split("*")[0].split("^")[0].rstrip("0123456789²³")
+    return base.lower() not in _NOT_A_UNIT and len(base) > 0
+
+
+def _check_answer_line(final_text: str) -> tuple[float | None, str | None, bool]:
+    """Check for a structured ``ANSWER:`` line.
+
+    Returns ``(value, unit, is_error)``.  If an ``ANSWER: ERROR`` line is
+    found, ``is_error`` is True and value/unit are None.
+    """
+    if not final_text:
+        return None, None, False
+    matches = list(_ANSWER_LINE_RE.finditer(final_text))
+    if not matches:
+        return None, None, False
+    m = matches[-1]  # last ANSWER: line wins
+    if m.group(1):  # ERROR case
+        return None, None, True
+    try:
+        val = float(m.group(2).replace(",", ""))
+        u = _clean_unit(m.group(3).strip()) if m.group(3) else None
+        return val, u, False
+    except ValueError:
+        return None, None, False
+
+
+def _extract_from_text(final_text: str) -> tuple[float | None, str | None]:
+    """Extract (value, unit) from the model's final text.
+
+    Priority order:
+    1. Structured ``ANSWER: <number> <unit>`` line
+    2. LaTeX ``\\boxed{...}``
+    3. Answer-section marker + last number+unit match
+    4. Last valid number+unit match in full text
+    """
+    if not final_text:
+        return None, None
+
+    # Priority 1: ANSWER: line
+    val, unit, is_error = _check_answer_line(final_text)
+    if val is not None:
+        return val, unit
+    # (is_error handled by caller via _check_answer_line directly)
+
+    # Priority 2: \boxed{...}
+    boxed = list(_BOXED_RE.finditer(final_text))
+    if boxed:
+        m = boxed[-1]
+        try:
+            val = float(m.group(1).replace(",", ""))
+            u = _clean_unit(m.group(2).strip().strip("\\").strip())
+            return val, u
+        except ValueError:
+            pass
+
+    # Priority 3: answer-section match — restrict search to text after the
+    # last answer marker (if any).
+    marker_match = None
+    for mm in _ANSWER_MARKER_RE.finditer(final_text):
+        marker_match = mm
+    if marker_match:
+        tail = final_text[marker_match.start():]
+        matches = list(_NUMBER_UNIT_RE.finditer(tail))
+        for m in reversed(matches):
+            if _is_valid_unit_token(m.group(2)):
+                try:
+                    return float(m.group(1).replace(",", "")), _clean_unit(m.group(2))
+                except ValueError:
+                    continue
+
+    # Priority 4: last valid number+unit match in full text
+    matches = list(_NUMBER_UNIT_RE.finditer(final_text))
+    for m in reversed(matches):
+        if _is_valid_unit_token(m.group(2)):
+            try:
+                return float(m.group(1).replace(",", "")), _clean_unit(m.group(2))
+            except ValueError:
+                continue
+
+    return None, None
+
+
+def _collect_tool_results(
+    tool_log: list[dict[str, Any]],
+) -> list[tuple[float, str | None]]:
+    """Return all (quantity, unit) pairs from successful convert/compute calls."""
+    results: list[tuple[float, str | None]] = []
+    for entry in tool_log:
+        if entry.get("tool") not in _ANSWER_TOOLS:
+            continue
+        if entry.get("is_error"):
+            continue
+        try:
+            result = json.loads(entry["result"]) if isinstance(entry["result"], str) else entry["result"]
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if "error" in result:
+            continue
+        q = result.get("quantity")
+        u = result.get("unit")
+        if q is not None:
+            results.append((float(q), u))
+    return results
+
+
+def _match_tool_unit(
+    value: float,
+    tool_results: list[tuple[float, str | None]],
+) -> str | None:
+    """Find a tool result whose quantity matches `value` and return its unit.
+
+    Matches within 0.1% relative tolerance to handle minor rounding
+    differences between the model's stated value and the tool's output.
+    """
+    if value == 0:
+        for tq, tu in tool_results:
+            if abs(tq) < 1e-9 and tu:
+                return tu
+        return None
+    for tq, tu in reversed(tool_results):
+        if tu and abs(tq - value) / abs(value) < 0.001:
+            return tu
+    return None
+
+
+def _extract_from_tools(
+    tool_log: list[dict[str, Any]],
+    final_text: str,
+) -> Extraction:
+    """Extract a structured answer from tool results and model text.
+
+    Used in judge-free mode (``--tools`` without ``--judge``).
+
+    Hybrid strategy:
+    - **Value**: prefer the model's final text (captures synthesised
+      multi-step answers that tools only computed parts of).
+    - **Unit**: if the text-extracted value matches a tool result, use
+      the tool's clean unit string (avoids LaTeX artifacts, prose names,
+      and truncated compound units from regex capture).
+    - Fall back to the last tool result when text extraction finds nothing.
+    """
+    refused = False
+
+    # -- Refusal detection ---------------------------------------------------
+    has_dim_incompatible = False
+    has_tool_error = False
+    for entry in tool_log:
+        try:
+            result = json.loads(entry["result"]) if isinstance(entry["result"], str) else entry["result"]
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if entry.get("tool") == "check_dimensions" and result.get("compatible") is False:
+            has_dim_incompatible = True
+        if "error" in result:
+            has_tool_error = True
+
+    # Signal 2: structured ANSWER: ERROR line
+    _, _, has_answer_error = _check_answer_line(final_text)
+    if has_answer_error:
+        return Extraction(refused=True)
+
+    # Signal 3: refusal language in model text
+    has_refusal_text = bool(_REFUSAL_KEYWORDS.search(final_text)) if final_text else False
+
+    if has_refusal_text or has_dim_incompatible:
+        text_val, _ = _extract_from_text(final_text)
+        if text_val is None:
+            return Extraction(refused=True)
+        if has_dim_incompatible and has_refusal_text:
+            return Extraction(refused=True)
+
+    # -- Collect all tool results for unit matching --------------------------
+    tool_results = _collect_tool_results(tool_log)
+
+    # -- Value/unit extraction -----------------------------------------------
+    # Primary: model's final text for the value
+    text_value, text_unit = _extract_from_text(final_text)
+
+    if text_value is not None:
+        # Try to find a matching tool result for a cleaner unit string
+        tool_unit = _match_tool_unit(text_value, tool_results)
+        unit = tool_unit if tool_unit else text_unit
+        return Extraction(value=text_value, unit=unit, refused=refused)
+
+    # Fallback: last successful tool result
+    if tool_results:
+        value, unit = tool_results[-1]
+        return Extraction(value=value, unit=unit, refused=refused)
+
+    return Extraction(refused=refused)
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +1050,10 @@ class Judge:
         ]
         resp = await self.backend.generate(messages, system=_JUDGE_SYSTEM)
         raw = resp.text or ""
-        return _parse_extraction(raw)
+        extraction = _parse_extraction(raw)
+        log.debug("judge extraction value=%s unit=%s refused=%s",
+                  extraction.value, extraction.unit, extraction.refused)
+        return extraction
 
 
 def _parse_extraction(raw: str) -> Extraction:
@@ -474,11 +1069,13 @@ def _parse_extraction(raw: str) -> Extraction:
     # Try to find a JSON object
     match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
     if not match:
+        log.warning("judge returned no JSON: %s", text[:200])
         return Extraction()
 
     try:
         obj = json.loads(match.group())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        log.warning("judge JSON parse failed: %s — raw: %s", exc, text[:200])
         return Extraction()
 
     return Extraction(
@@ -517,8 +1114,50 @@ _SUPERSCRIPT_MAP = str.maketrans({
 })
 
 
+# Long-form and plural unit names → canonical short form (lowercase).
+# Covers the aliases observed in model outputs from the control run.
+_UNIT_ALIASES: dict[str, str] = {
+    # Time
+    "seconds": "s", "second": "s",
+    "minutes": "min", "minute": "min",
+    "hours": "h", "hour": "h",
+    # Length
+    "meters": "m", "meter": "m", "metres": "m", "metre": "m",
+    "inches": "in", "inch": "in",
+    "feet": "ft", "foot": "ft",
+    # Mass
+    "grams": "g", "gram": "g",
+    "kilograms": "kg", "kilogram": "kg",
+    "pounds": "lb", "pound": "lb",
+    # Energy / Power
+    "watts": "w", "watt": "w",
+    "joules": "j", "joule": "j",
+    # Volume
+    "gallons": "gal", "gallon": "gal",
+    "liters": "l", "liter": "l", "litres": "l", "litre": "l",
+    # Astronomy
+    "light-years": "ly", "light-year": "ly",
+    "parsecs": "pc", "parsec": "pc",
+    "solar masses": "m☉", "solar mass": "m☉",
+    "arcseconds": "arcsec", "arcsecond": "arcsec",
+    "arcminutes": "arcmin", "arcminute": "arcmin",
+    "microradians": "µrad", "microradian": "µrad",
+    # Photometry
+    "millilumens": "mlm", "millilumen": "mlm",
+}
+
+# Strings that should be treated as equivalent to "dimensionless"
+_DIMENSIONLESS_SYNONYMS = {"", "dimensionless", "ratio", "unitless", "pure number"}
+
+
 def normalise_unit(u: str) -> str:
-    """Normalise a unit string for comparison."""
+    """Normalise a unit string for comparison.
+
+    Applies cosmetic normalisation (unicode, case, brackets) then parses the
+    unit into a canonical factored form so that algebraically equivalent
+    representations compare equal.  For example ``J/K/mol`` and ``J/(mol·K)``
+    both canonicalise to ``j*k^-1*mol^-1``.
+    """
     s = u.strip()
     # Unicode NFKD normalisation (decomposes compatibility chars)
     s = unicodedata.normalize("NFKD", s)
@@ -532,7 +1171,91 @@ def normalise_unit(u: str) -> str:
     s = s.replace("·", "*").replace("⋅", "*").replace("\u00b7", "*")
     # Lowercase
     s = s.lower()
-    return s
+
+    # Check for dimensionless synonyms early
+    if s in _DIMENSIONLESS_SYNONYMS:
+        return "dimensionless"
+
+    # Replace long-form / plural unit names with canonical short forms
+    # Try longest match first to handle multi-word aliases ("solar masses")
+    for alias, canonical in sorted(_UNIT_ALIASES.items(), key=lambda x: -len(x[0])):
+        s = re.sub(r'\b' + re.escape(alias) + r'\b', canonical, s)
+
+    # Re-apply NFKD after alias substitution so that characters injected by
+    # aliases (e.g. U+00B5 MICRO SIGN in "µrad") get normalised to their
+    # canonical decomposition (U+03BC GREEK SMALL MU), matching the expected
+    # unit which also goes through NFKD.
+    s = unicodedata.normalize("NFKD", s)
+
+    # Try to parse into a canonical factored form
+    try:
+        factors = _parse_unit_factors(s)
+        # Build canonical string: sorted factors with explicit exponents
+        parts = []
+        for base, exp in sorted(factors.items()):
+            if exp == 1:
+                parts.append(base)
+            else:
+                parts.append(f"{base}^{exp}")
+        return "*".join(parts) if parts else s
+    except Exception:
+        # Fall back to cosmetic normalisation only
+        return s
+
+
+def _parse_unit_factors(s: str) -> dict[str, int]:
+    """Parse a normalised unit string into {base_unit: exponent} factors.
+
+    Handles patterns like:
+      - ``j/k/mol``        → {j: 1, k: -1, mol: -1}
+      - ``j/(mol*k)``      → {j: 1, mol: -1, k: -1}
+      - ``kg*m^2/s^2``     → {kg: 1, m: 2, s: -2}
+      - ``kg*m^2*s^-2``    → {kg: 1, m: 2, s: -2}
+      - ``m/s^2``          → {m: 1, s: -2}
+    """
+    factors: dict[str, int] = {}
+    # Tokenise: split on / at the top level (respecting parentheses)
+    # First, split into numerator and denominator groups by top-level /
+    groups: list[tuple[str, int]] = []  # (group_str, sign)
+    depth = 0
+    current: list[str] = []
+    sign = 1  # +1 for numerator, -1 for denominator
+    for ch in s:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "/" and depth == 0:
+            groups.append(("".join(current), sign))
+            current = []
+            sign = -1
+        else:
+            current.append(ch)
+    groups.append(("".join(current), sign))
+
+    for group, gsign in groups:
+        group = group.strip()
+        # Strip outer parens: (mol*k) → mol*k
+        if group.startswith("(") and group.endswith(")"):
+            group = group[1:-1]
+        # Split on * or space (multiplication)
+        tokens = re.split(r"[* ]+", group)
+        for tok in tokens:
+            tok = tok.strip()
+            if not tok:
+                continue
+            # Parse exponent: kg^2, s^-2, m2, m^2
+            m = re.match(r"^([a-z_]+)\^?(-?\d+)$", tok)
+            if m:
+                base, exp = m.group(1), int(m.group(2))
+            else:
+                base, exp = tok, 1
+            factors[base] = factors.get(base, 0) + exp * gsign
+
+    # Remove factors with exponent 0
+    return {b: e for b, e in factors.items() if e != 0}
 
 
 def score_problem(
@@ -565,8 +1288,32 @@ def score_problem(
 
     # Unit match
     score_unit = False
+    norm_expected = normalise_unit(expected_unit) if expected_unit else ""
     if extraction.unit is not None and expected_unit:
-        score_unit = normalise_unit(extraction.unit) == normalise_unit(expected_unit)
+        score_unit = normalise_unit(extraction.unit) == norm_expected
+    elif extraction.unit is None and norm_expected == "dimensionless":
+        # Model gave a bare number for a dimensionless quantity — correct
+        score_unit = True
+
+    # Scale-prefix fallback: if unit strings differ but represent the same
+    # dimension (e.g. kJ/mol vs J/mol), rescale the predicted value and
+    # re-check numerical accuracy.  Unit.fold_scale() is only on UnitProduct;
+    # bare Unit objects have an implicit scale of 1.
+    if not score_unit and not score_numerical and extraction.unit and extraction.value is not None:
+        try:
+            from ucon.units import get_unit_by_name
+            u_exp = get_unit_by_name(expected_unit)
+            u_pred = get_unit_by_name(extraction.unit)
+            if u_exp.dimension == u_pred.dimension:
+                score_unit = True
+                s_pred = u_pred.fold_scale() if hasattr(u_pred, "fold_scale") else 1.0
+                s_exp = u_exp.fold_scale() if hasattr(u_exp, "fold_scale") else 1.0
+                adjusted = extraction.value * (s_pred / s_exp)
+                if expected_value is not None and expected_value != 0:
+                    pct_error = abs(adjusted - expected_value) / abs(expected_value) * 100
+                    score_numerical = pct_error <= tolerance_pct
+        except Exception:
+            pass
 
     score_overall = score_numerical and score_unit and score_refusal
     return score_numerical, score_unit, score_refusal, score_overall
@@ -582,17 +1329,19 @@ class Evaluator:
     def __init__(
         self,
         backend: ModelBackend,
-        judge: Judge,
+        judge: Judge | None = None,
         *,
         mcp_bridge: MCPToolBridge | None = None,
         max_tool_rounds: int = 10,
         condition: str = "bare",
+        timeout: float = 120,
     ):
         self.backend = backend
         self.judge = judge
         self.mcp_bridge = mcp_bridge
         self.max_tool_rounds = max_tool_rounds
         self.condition = condition
+        self.timeout = timeout
 
     async def evaluate(
         self,
@@ -613,65 +1362,21 @@ class Evaluator:
             else None
         )
 
+        pid = problem.get("problem_id", "?")
+        _say = lambda msg: print(f"       {msg}", file=sys.stderr, flush=True)
+
         try:
+            final_text, extraction, tool_log = await asyncio.wait_for(
+                self._run_loop(pid, messages, tools, tool_log, _say),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError:
+            _say(f"Timed out waiting for model response ({self.timeout:.0f}s limit)")
             final_text = ""
-            for _round in range(self.max_tool_rounds + 1):
-                resp = await self.backend.generate(messages, tools=tools)
-
-                if resp.text:
-                    final_text = resp.text
-
-                if not resp.tool_calls or not self.mcp_bridge:
-                    break
-
-                # Build assistant message with tool use
-                assistant_content: list[dict[str, Any]] = []
-                if resp.text:
-                    assistant_content.append({"type": "text", "text": resp.text})
-                for tc in resp.tool_calls:
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
-                    })
-                messages.append({"role": "assistant", "content": assistant_content})
-
-                # Execute tool calls and build tool result messages
-                for tc in resp.tool_calls:
-                    try:
-                        result_text = await self.mcp_bridge.call_tool(
-                            tc.name, tc.arguments
-                        )
-                        is_error = False
-                    except Exception as exc:
-                        result_text = f"Error: {exc}"
-                        is_error = True
-
-                    tool_log.append({
-                        "round": _round,
-                        "tool": tc.name,
-                        "arguments": tc.arguments,
-                        "result": result_text[:500],
-                        "is_error": is_error,
-                    })
-
-                    messages.append({
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tc.id,
-                                "content": result_text,
-                                "is_error": is_error,
-                            }
-                        ],
-                    })
-
-            # Judge extracts structured answer
-            extraction = await self.judge.extract(final_text) if final_text else Extraction()
-
+            extraction = Extraction()
+            error = f"timeout after {self.timeout}s"
         except Exception as exc:
+            _say(f"Error: {exc}")
             final_text = ""
             extraction = Extraction()
             error = str(exc)
@@ -694,6 +1399,95 @@ class Evaluator:
             latency_ms=latency_ms,
             error=error,
         )
+
+    async def _run_loop(
+        self,
+        pid: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_log: list[dict[str, Any]],
+        _say: Any,
+    ) -> tuple[str, Extraction, list[dict[str, Any]]]:
+        """Inner evaluation loop — model, tool rounds, judge."""
+        _say("Waiting for model response...")
+        final_text = ""
+        for _round in range(self.max_tool_rounds + 1):
+            gen_kwargs: dict[str, Any] = {"tools": tools}
+
+            if tools:
+                gen_kwargs["system"] = _TOOLS_SYSTEM
+                if _round == 0 and isinstance(self.backend, ClaudeBackend):
+                    gen_kwargs["tool_choice"] = {"type": "any"}
+            elif self.judge is None:
+                gen_kwargs["system"] = _ANSWER_SYSTEM
+
+            resp = await self.backend.generate(messages, **gen_kwargs)
+
+            if resp.text:
+                final_text = resp.text
+
+            if not resp.tool_calls or not self.mcp_bridge:
+                break
+
+            tool_names = ", ".join(tc.name for tc in resp.tool_calls)
+            _say(f"Model requested tool(s): {tool_names}")
+
+            # Build assistant message with tool use
+            assistant_content: list[dict[str, Any]] = []
+            if resp.text:
+                assistant_content.append({"type": "text", "text": resp.text})
+            for tc in resp.tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.arguments,
+                })
+            messages.append({"role": "assistant", "content": assistant_content})
+
+            # Execute tool calls and build tool result messages
+            for tc in resp.tool_calls:
+                _say(f"Calling tool '{tc.name}'...")
+                try:
+                    result_text = await self.mcp_bridge.call_tool(
+                        tc.name, tc.arguments
+                    )
+                    is_error = False
+                except Exception as exc:
+                    result_text = f"Error: {exc}"
+                    is_error = True
+                    _say(f"Tool '{tc.name}' failed: {exc}")
+
+                tool_log.append({
+                    "round": _round,
+                    "tool": tc.name,
+                    "arguments": tc.arguments,
+                    "result": result_text[:500],
+                    "is_error": is_error,
+                })
+
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tc.id,
+                            "content": result_text,
+                            "is_error": is_error,
+                        }
+                    ],
+                })
+
+            _say("Waiting for model response...")
+
+        # Extract structured answer
+        if self.judge is not None:
+            _say("Extracting answer via judge...")
+            extraction = await self.judge.extract(final_text) if final_text else Extraction()
+        else:
+            _say("Extracting answer from tool results...")
+            extraction = _extract_from_tools(tool_log, final_text)
+        return final_text, extraction, tool_log
 
 
 # ---------------------------------------------------------------------------
@@ -727,15 +1521,38 @@ class Runner:
         async def _eval_one(p: dict[str, Any]) -> EvalResult:
             nonlocal completed
             async with sem:
+                pid = p.get("problem_id", "?")
+                print(f"\n[{completed + 1}/{total}] {pid}", file=sys.stderr, flush=True)
+
                 r = await self.evaluator.evaluate(p, self.model_spec)
                 completed += 1
-                status = "PASS" if r.score_overall else "FAIL"
+
+                elapsed = f"{r.latency_ms / 1000:.1f}s"
+
                 if r.error:
-                    status = "ERR "
-                print(
-                    f"[{completed:>3}/{total}] {status}  {p['problem_id']}",
-                    file=sys.stderr,
-                )
+                    print(f"  ==>  ERROR  ({elapsed})  {r.error}", file=sys.stderr)
+                elif r.problem.get("must_fail", False):
+                    refused = "yes" if r.extraction.refused else "no"
+                    verdict = "PASS" if r.score_overall else "FAIL"
+                    print(
+                        f"  ==>  {verdict}  ({elapsed})  "
+                        f"should refuse: model {'refused' if r.extraction.refused else 'answered'}",
+                        file=sys.stderr,
+                    )
+                else:
+                    expected = r.problem.get("answer", {})
+                    exp_val = expected.get("value")
+                    exp_unit = expected.get("unit", "")
+                    tol = expected.get("tolerance_pct", 5.0)
+                    got_val = r.extraction.value
+                    got_unit = r.extraction.unit or ""
+                    verdict = "PASS" if r.score_overall else "FAIL"
+                    print(
+                        f"  ==>  {verdict}  ({elapsed})  "
+                        f"expected: {exp_val} {exp_unit} (+/-{tol}%)  "
+                        f"got: {got_val} {got_unit}",
+                        file=sys.stderr,
+                    )
                 return r
 
         tasks = [asyncio.create_task(_eval_one(p)) for p in problems]
@@ -745,7 +1562,7 @@ class Runner:
         lines = [_result_to_jsonl(r) for r in results]
         if output:
             output.write_text("\n".join(lines) + "\n")
-            print(f"\nResults written to {output}", file=sys.stderr)
+            log.info("results written to %s", output)
         else:
             for line in lines:
                 print(line)
@@ -908,6 +1725,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     parser.add_argument(
+        "-v", "--verbose",
+        action="count",
+        default=0,
+        help="Increase log verbosity (-v for INFO, -vv for DEBUG)",
+    )
+    parser.add_argument(
         "-m", "--model",
         required=True,
         help="Model spec as backend:model (e.g. claude:claude-haiku-4-5-20251001, ollama:llama3.2:3b)",
@@ -926,6 +1749,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-url",
         default=None,
         help="MCP server URL for SSE transport (default: spawn stdio server)",
+    )
+    parser.add_argument(
+        "--mcp-api-key",
+        default=None,
+        help="API key for MCP server authentication (sent as Bearer token)",
     )
     parser.add_argument(
         "-j",
@@ -948,6 +1776,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max problems to evaluate",
+    )
+    parser.add_argument(
+        "--num-ctx",
+        type=int,
+        default=None,
+        help="Ollama context window size (overrides model default)",
+    )
+    parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Stream model output to stderr in real time (useful for thinking models)",
+    )
+    parser.add_argument(
+        "--no-think",
+        action="store_true",
+        help="Disable thinking/chain-of-thought for models that support it (e.g. qwen3)",
     )
     parser.add_argument(
         "--filter-difficulty",
@@ -975,6 +1819,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Max tool call rounds per problem (default: 10)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120,
+        help="Per-problem timeout in seconds (default: 120)",
+    )
     return parser
 
 
@@ -987,12 +1837,13 @@ async def async_main(args: argparse.Namespace) -> None:
         data_path = script_dir / "data" / "test.jsonl"
 
     if not data_path.exists():
-        print(f"Error: data file not found: {data_path}", file=sys.stderr)
+        log.error("data file not found: %s", data_path)
         sys.exit(1)
 
     # Load and filter problems
+    _say = lambda msg: print(msg, file=sys.stderr, flush=True)
+
     problems = load_problems(data_path)
-    print(f"Loaded {len(problems)} problems from {data_path}", file=sys.stderr)
 
     problems = filter_problems(
         problems,
@@ -1002,47 +1853,86 @@ async def async_main(args: argparse.Namespace) -> None:
         must_fail=args.filter_must_fail,
         limit=args.limit,
     )
-    print(f"After filtering: {len(problems)} problems", file=sys.stderr)
 
     if not problems:
-        print("No problems to evaluate.", file=sys.stderr)
+        _say("No problems matched the given filters.")
         sys.exit(0)
 
-    # Build backends
-    model_backend = make_backend(args.model)
+    # Judge only when explicitly requested via --judge
+    use_judge = args.judge is not None
+    judge_spec = args.judge if use_judge else None
+    condition = "tool-augmented" if args.tools else "bare"
 
-    judge_spec = args.judge or args.model
-    judge_backend = make_backend(judge_spec)
-    judge = Judge(judge_backend)
+    # Header
+    _say("")
+    _say("=" * 60)
+    _say("UnitSafe Benchmark Runner")
+    _say("=" * 60)
+    _say(f"  Model:       {args.model}")
+    _say(f"  Judge:       {judge_spec or 'none (direct extraction)'}")
+    _say(f"  Mode:        {condition}")
+    _say(f"  Problems:    {len(problems)}")
+    _say(f"  Concurrency: {args.j}")
+    _say(f"  Timeout:     {args.timeout:.0f}s per problem")
+    if args.no_think:
+        _say(f"  Thinking:    disabled")
+    _say("")
+
+    # Build backends
+    model_backend = make_backend(
+        args.model, num_ctx=args.num_ctx, show_thinking=args.show_thinking,
+        think=not args.no_think,
+    )
+    judge: Judge | None = None
+    if use_judge:
+        judge_backend = make_backend(judge_spec, num_ctx=args.num_ctx)
+        judge = Judge(judge_backend)
 
     # Preflight — verify backends are reachable before starting eval
-    preflight_targets: list[tuple[str, Any]] = [(args.model, model_backend)]
-    if judge_spec != args.model:
-        preflight_targets.append((judge_spec, judge_backend))
-    for spec, backend in preflight_targets:
-        print(f"Preflight check: {spec}...", file=sys.stderr, end=" ", flush=True)
+    _say("Checking connectivity...")
+    preflight_targets: list[tuple[str, str, Any]] = [
+        ("Model", args.model, model_backend),
+    ]
+    if use_judge and judge_spec != args.model:
+        preflight_targets.append(("Judge", judge_spec, judge_backend))
+    for label, spec, backend in preflight_targets:
+        _say(f"  {label} ({spec})...")
         try:
             await backend.preflight()
-            print("ok", file=sys.stderr)
+            _say(f"  {label} ({spec}) — ok")
         except RuntimeError as exc:
-            print("FAILED", file=sys.stderr)
-            print(f"Error: {exc}", file=sys.stderr)
+            _say(f"  {label} ({spec}) — FAILED")
+            _say(f"    {exc}")
             sys.exit(1)
+
+    # Validate: claude-code backend doesn't support tool use
+    if args.tools and isinstance(model_backend, ClaudeCodeBackend):
+        _say("ERROR: 'claude-code' backend does not support tool-augmented evaluation.")
+        _say("  The claude-code backend uses 'claude -p' which cannot make tool calls.")
+        _say("  Use 'claude:<model>' instead (requires ANTHROPIC_API_KEY).")
+        _say(f"  Example: -m claude:{args.model.partition(':')[2] or 'claude-haiku-4-5-20251001'}")
+        sys.exit(1)
 
     # MCP bridge
     mcp_bridge: MCPToolBridge | None = None
-    condition = "bare"
     if args.tools:
-        condition = "tools"
+        mcp_target = args.mcp_url or "ucon-mcp (stdio)"
+        _say(f"  MCP server ({mcp_target})...")
         mcp_bridge = MCPToolBridge()
-        if args.mcp_url:
-            print(f"Connecting to MCP server at {args.mcp_url}...", file=sys.stderr)
-            await mcp_bridge.connect_sse(args.mcp_url)
-        else:
-            print("Spawning MCP stdio server (ucon-mcp)...", file=sys.stderr)
-            await mcp_bridge.connect_stdio("ucon-mcp")
-        tool_count = len(mcp_bridge.tool_definitions)
-        print(f"MCP bridge ready: {tool_count} tools available", file=sys.stderr)
+        try:
+            if args.mcp_url:
+                await mcp_bridge.connect_url(args.mcp_url, api_key=args.mcp_api_key)
+            else:
+                await mcp_bridge.connect_stdio("ucon-mcp")
+            tool_count = len(mcp_bridge.tool_definitions)
+            _say(f"  MCP server ({mcp_target}) — ok, {tool_count} tools")
+        except RuntimeError as exc:
+            _say(f"  MCP server ({mcp_target}) — FAILED")
+            _say(f"    {exc}")
+            sys.exit(1)
+
+    _say("")
+    _say(f"Running {len(problems)} evaluations...")
 
     # Build evaluator and runner
     evaluator = Evaluator(
@@ -1051,6 +1941,7 @@ async def async_main(args: argparse.Namespace) -> None:
         mcp_bridge=mcp_bridge,
         max_tool_rounds=args.max_tool_rounds,
         condition=condition,
+        timeout=args.timeout,
     )
 
     runner = Runner(evaluator, args.model, concurrency=args.j)
@@ -1067,6 +1958,17 @@ async def async_main(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(
+        args.verbose, logging.DEBUG
+    )
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-5s %(name)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+
     asyncio.run(async_main(args))
 
 
