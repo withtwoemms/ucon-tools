@@ -581,7 +581,8 @@ class TestExtendBasis(unittest.TestCase):
         )
         self.assertIsInstance(result, self.ExtendedBasisResult)
         self.assertTrue(result.success)
-        self.assertEqual(len(result.components), 9)  # 7 SI + 2 additional
+        # ucon's SI basis has 8 components (M, L, T, I, Θ, J, N, B) + 2 additional
+        self.assertEqual(len(result.components), 10)
 
     def test_unknown_base_rejected(self):
         """Test that unknown base is rejected."""
@@ -620,12 +621,12 @@ class TestExtendBasis(unittest.TestCase):
                 {"name": "marker_a", "symbol": "A", "description": "First marker"},
             ],
         )
-        # Create second basis
+        # Create second basis (symbol Q chosen to avoid collision with SI 'B' for information)
         self.extend_basis(
             name="basis_two",
             base="SI",
             additional_components=[
-                {"name": "marker_b", "symbol": "B", "description": "Second marker"},
+                {"name": "marker_b", "symbol": "Q", "description": "Second marker"},
             ],
         )
 
