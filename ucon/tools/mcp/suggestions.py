@@ -103,10 +103,27 @@ def _suggest_units(bad_name: str) -> tuple[str | None, list[str]]:
     from ucon.resolver import _UNIT_REGISTRY
 
     corpus = _get_fuzzy_corpus()
-    matches = get_close_matches(bad_name.lower(), corpus, n=3, cutoff=0.6)
+    matches = get_close_matches(bad_name.lower(), corpus, n=5, cutoff=0.6)
 
     if not matches:
         return None, []
+
+    # Deduplicate by target Unit: multiple aliases of the same unit
+    # (e.g. 'meter', 'metre', 'metres') should collapse to one candidate
+    # so the gap criterion compares distinct units rather than synonyms.
+    # Preserve order; the first occurrence wins (highest-scoring alias).
+    seen_units: list = []
+    unique_matches: list[str] = []
+    for m in matches:
+        unit = _UNIT_REGISTRY[m]
+        if any(u is unit for u in seen_units):
+            continue
+        seen_units.append(unit)
+        unique_matches.append(m)
+        if len(unique_matches) == 3:
+            break
+
+    matches = unique_matches
 
     # Check top match score
     top_score = _similarity(bad_name.lower(), matches[0])
