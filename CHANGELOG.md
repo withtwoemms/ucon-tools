@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-05-04
+
 ### Added
 
 - [UnitSafe](https://huggingface.co/datasets/radiativity/UnitSafe) benchmark
@@ -45,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - replaces codecov badge in accordance with recent repo ownership handover
+- **Typo suggestions deduplicate by target Unit.** `_suggest_units` previously
+  returned multiple aliases of the same unit (e.g. `meter`, `metre`, `metres`)
+  as separate fuzzy-match candidates. With ucon 1.6.4 adding plural aliases,
+  the top matches for typos like `meater` were three synonyms of `meter` with
+  near-identical similarity scores, defeating the 0.1 gap criterion that
+  guards against ambiguous suggestions. The fuzzy-match pool is now widened
+  from 3 to 5 raw candidates and collapsed by `Unit` identity (preserving
+  the highest-scoring alias per cluster) before the gap and absolute-score
+  thresholds run. No public API change; thresholds and scoring are unchanged.
 
 ## [0.4.5] - 2026-04-15
 
