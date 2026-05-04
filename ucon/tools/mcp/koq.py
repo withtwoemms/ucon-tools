@@ -15,13 +15,14 @@ following the same pattern as custom unit creation.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    pass
+    from ucon.basis import Basis
+    from ucon.dimension import Dimension
 
 
 # -----------------------------------------------------------------------------
@@ -93,12 +94,18 @@ class ExtendedBasisInfo:
         All components in the extended basis.
     additional_components : tuple[tuple[str, str, str], ...]
         Additional components as (name, symbol, description) tuples.
+    runtime_basis : Basis | None
+        Materialized ucon `Basis` object for the extended basis (Phase 2).
+    runtime_dimensions : tuple[Dimension, ...]
+        Materialized `Dimension` objects, one per additional component (Phase 2).
     """
 
     name: str
     base: str
     components: tuple[str, ...]
     additional_components: tuple[tuple[str, str, str], ...] = ()
+    runtime_basis: "Basis | None" = None
+    runtime_dimensions: tuple["Dimension", ...] = ()
 
 
 # -----------------------------------------------------------------------------

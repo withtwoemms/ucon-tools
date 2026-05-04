@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ucon.constants import Constant
+    from ucon.dimension import Dimension
     from ucon.graph import ConversionGraph
     from ucon.tools.mcp.koq import ComputationDeclaration, ExtendedBasisInfo, QuantityKindInfo
 
@@ -68,6 +69,10 @@ class SessionState(Protocol):
         """Register an extended basis for this session."""
         ...
 
+    def get_session_dimensions(self) -> dict[str, "Dimension"]:
+        """Get dimensions created from extended bases."""
+        ...
+
     def reset(self) -> None:
         """Reset session to default state."""
         ...
@@ -101,6 +106,7 @@ class DefaultSessionState:
         self._quantity_kinds: dict[str, "QuantityKindInfo"] = {}
         self._active_computation: "ComputationDeclaration | None" = None
         self._extended_bases: dict[str, "ExtendedBasisInfo"] = {}
+        self._session_dimensions: dict[str, "Dimension"] = {}
 
     def get_graph(self) -> "ConversionGraph":
         """Get or create the session graph.
@@ -160,6 +166,10 @@ class DefaultSessionState:
         """
         self._extended_bases[basis.name] = basis
 
+    def get_session_dimensions(self) -> dict[str, "Dimension"]:
+        """Get the session's dimensions created from extended bases."""
+        return self._session_dimensions
+
     def reset(self) -> None:
         """Reset session to default state.
 
@@ -172,3 +182,4 @@ class DefaultSessionState:
         self._quantity_kinds = {}
         self._active_computation = None
         self._extended_bases = {}
+        self._session_dimensions = {}

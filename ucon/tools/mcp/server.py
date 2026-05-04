@@ -94,6 +94,18 @@ def _reset_fallback_session() -> None:
         _fallback_session.reset()
 
 
+def _all_known_dimensions(session: SessionState | None = None) -> dict[str, "Dimension"]:
+    """Return built-in dimensions plus any session-created dimensions.
+
+    Built-in dimensions are loaded from ``ucon.dimension.all_dimensions()``;
+    session dimensions come from ``extend_basis()`` (Phase 2).
+    """
+    dims: dict[str, "Dimension"] = {d.name: d for d in all_dimensions() if d.name is not None}
+    if session is not None:
+        dims.update(session.get_session_dimensions())
+    return dims
+
+
 def _resolve_constant(symbol: str, ctx: Context | None = None):
     """Resolve a constant symbol from built-in or session constants."""
     from ucon.constants import get_constant_by_symbol
@@ -2659,6 +2671,129 @@ def call_formula(
 # -----------------------------------------------------------------------------
 # KOQ (Kind-of-Quantity) Tools
 # -----------------------------------------------------------------------------
+
+
+_SUPERSCRIPTS = {1: "", 2: "²", 3: "³", -1: "⁻¹", -2: "⁻²", -3: "⁻³"}
+
+
+def _format_exponent(symbol: str, exp: int) -> str:
+    """Render ``symbol`` raised to ``exp`` using unicode superscripts.
+
+    Examples
+    --------
+    >>> _format_exponent("M", 1)
+    'M'
+    >>> _format_exponent("L", 2)
+    'L²'
+    >>> _format_exponent("T", -1)
+    'T⁻¹'
+    >>> _format_exponent("$", 4)
+    '$^4'
+    """
+    sup = _SUPERSCRIPTS.get(exp)
+    if sup is not None:
+        return f"{symbol}{sup}" if sup else symbol
+    return f"{symbol}^{exp}"
+
+
+def _parse_compound_dimension(
+    expr: str,
+    known_vectors: dict[str, str],
+    extra_symbols: list[str] | None = None,
+) -> str | None:
+    """Parse compound dimension expressions like ``mass/time`` into vector notation.
+
+    Splits ``expr`` on the first ``/`` into numerator and denominator. Each side
+    can be a single dimension name or several joined by ``*``/``·``. Optional
+    ``^N`` exponents are supported on each term.
+
+    Only single-symbol base dimensions can compound; if any term is a composite
+    derived dimension (e.g., ``energy``) the function returns ``None``.
+
+    Parameters
+    ----------
+    expr : str
+        Dimension expression, e.g. ``"mass/time"``, ``"mass*length/time^2"``.
+    known_vectors : dict[str, str]
+        Mapping of lowercased dimension names to single-symbol vector strings.
+        Names whose values are composite (contain ``·``) are rejected.
+    extra_symbols : list[str] | None
+        Extended-basis symbols to include in canonical ordering after SI symbols.
+
+    Returns
+    -------
+    str | None
+        Canonical-ordered vector string, or ``None`` if parsing fails.
+    """
+    import re
+
+    if "/" not in expr and "*" not in expr and "·" not in expr:
+        return None
+
+    if "/" in expr:
+        num_str, _, den_str = expr.partition("/")
+    else:
+        num_str, den_str = expr, ""
+
+    den_str = den_str.strip()
+    if den_str.startswith("(") and den_str.endswith(")"):
+        den_str = den_str[1:-1]
+
+    def _split_terms(s: str) -> list[str]:
+        if not s:
+            return []
+        return [t.strip() for t in re.split(r"[*·]", s) if t.strip()]
+
+    def _parse_term(term: str) -> tuple[str, int] | None:
+        # term may be like "mass" or "time^2"
+        m = re.match(r"^([A-Za-z_]+)(?:\^(-?\d+))?$", term)
+        if not m:
+            return None
+        name = m.group(1).lower()
+        exp = int(m.group(2)) if m.group(2) else 1
+        symbol = known_vectors.get(name)
+        if symbol is None:
+            return None
+        # Reject composite vectors (more than a single symbol).
+        if any(c in symbol for c in ["·", "²", "³", "⁻", "^"]):
+            return None
+        if len(symbol) > 2:  # extended symbols like "$" are 1 char; reject longer composites
+            return None
+        return symbol, exp
+
+    exponents: dict[str, int] = {}
+
+    for term in _split_terms(num_str):
+        parsed = _parse_term(term)
+        if parsed is None:
+            return None
+        sym, exp = parsed
+        exponents[sym] = exponents.get(sym, 0) + exp
+
+    for term in _split_terms(den_str):
+        parsed = _parse_term(term)
+        if parsed is None:
+            return None
+        sym, exp = parsed
+        exponents[sym] = exponents.get(sym, 0) - exp
+
+    si_order = ["M", "L", "T", "I", "Θ", "N", "J"]
+    extras = list(extra_symbols) if extra_symbols else []
+    seen = set(si_order)
+    full_order = list(si_order) + [s for s in extras if not (s in seen or seen.add(s))]
+    # Append any leftover symbols that weren't explicitly ordered
+    for sym in exponents:
+        if sym not in full_order:
+            full_order.append(sym)
+
+    components: list[str] = []
+    for sym in full_order:
+        exp = exponents.get(sym, 0)
+        if exp == 0:
+            continue
+        components.append(_format_exponent(sym, exp))
+
+    return "·".join(components) if components else "1"
 
 
 def _get_dimension_vector(unit) -> str:
