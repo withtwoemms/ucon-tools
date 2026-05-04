@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (non-functional)
 
+- **Foundation for `extend_basis` Phase 2.** Internal session-aware dimension
+  adapter layer that collapses eight scattered "what dimensions exist?" lookups
+  into one extensible seam. No user-visible behavior change yet — the
+  wire-through to `define_unit`, `list_units`, `list_dimensions`,
+  `define_quantity_kind`, `list_quantity_kinds`,
+  `_parse_dimension_to_vector`, `_normalize_dimension_vector`, and
+  `build_unknown_dimension_error` is pending. Concretely:
+  - `SessionState.get_session_dimensions()` protocol method + matching
+    `DefaultSessionState` implementation, with a `_session_dimensions` dict
+    cleared on `reset()`
+  - `ExtendedBasisInfo.runtime_basis` and `runtime_dimensions` fields,
+    promoting the metadata record to a bridge between MCP-level descriptions
+    and ucon-core `Basis` / `Dimension` objects
+  - `_all_known_dimensions(session)` helper — single source of truth for
+    built-in ∪ session-created dimensions
+  - `_format_exponent(symbol, exp)` helper — symbol-agnostic unicode
+    superscript rendering (no longer hardcoded to SI symbols)
+  - `_parse_compound_dimension(expr, known_vectors, extra_symbols)` helper —
+    composes single-symbol bases through `/`, `*`, `^N` with extended-symbol
+    canonical ordering
 - `MANIFEST.in` to exclude benchmarks, docs, tests, scripts, and CI
   config from sdist
 - `glama.json` metadata file for [Glama](https://glama.ai) MCP server registry
