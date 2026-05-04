@@ -25,6 +25,7 @@ from ucon.units import UnknownUnitError
 
 if TYPE_CHECKING:
     from ucon.core import Dimension, Unit, UnitProduct
+    from ucon.tools.mcp.session import SessionState
 
 
 class ConversionError(BaseModel):
@@ -488,13 +489,20 @@ def build_parse_error(
     )
 
 
-def build_unknown_dimension_error(bad_dimension: str) -> ConversionError:
+def build_unknown_dimension_error(
+    bad_dimension: str,
+    session: "SessionState | None" = None,
+) -> ConversionError:
     """Build a ConversionError for an unknown dimension filter.
 
     Parameters
     ----------
     bad_dimension : str
         The unrecognized dimension string.
+    session : SessionState | None
+        Optional session whose extended-basis dimensions should be included
+        in the suggestion pool. When provided, dimensions registered via
+        ``extend_basis()`` are considered alongside built-in dimensions.
 
     Returns
     -------
@@ -504,6 +512,9 @@ def build_unknown_dimension_error(bad_dimension: str) -> ConversionError:
     from ucon.dimension import all_dimensions
 
     known = [d.name for d in all_dimensions()]
+    if session is not None:
+        # Include session-scoped dimensions from extended bases
+        known = list(set(known) | set(session.get_session_dimensions().keys()))
     matches = get_close_matches(bad_dimension.lower(), [k.lower() for k in known], n=3, cutoff=0.6)
 
     # Map back to proper case

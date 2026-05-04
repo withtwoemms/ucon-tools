@@ -507,11 +507,13 @@ def list_units(
     """
     import ucon.units as units_module
 
-    # Validate dimension filter if provided
+    session = _get_session(ctx)
+
+    # Validate dimension filter if provided (session-aware)
     if dimension:
-        known_dimensions = [d.name for d in all_dimensions()]
-        if dimension not in known_dimensions:
-            return build_unknown_dimension_error(dimension)
+        known_dims = _all_known_dimensions(session)
+        if dimension not in known_dims:
+            return build_unknown_dimension_error(dimension, session=session)
 
     # Units that accept SI scale prefixes
     SCALABLE_UNITS = {
@@ -545,7 +547,6 @@ def list_units(
             )
 
     # Session-defined units from graph registry
-    session = _get_session(ctx)
     graph = session.get_graph()
 
     # Get unique units from graph's case-sensitive registry
@@ -1068,19 +1069,21 @@ def _build_product_from_accum(
 
 
 @mcp.tool()
-def list_dimensions() -> list[str]:
+def list_dimensions(ctx: Context | None = None) -> list[str]:
     """
     List available physical dimensions.
 
     Dimensions represent fundamental physical quantities (length, mass, time, etc.)
-    and derived quantities (velocity, force, energy, etc.).
+    and derived quantities (velocity, force, energy, etc.). Includes any
+    dimensions created in this session via ``extend_basis``.
 
     Use these dimension names to filter list_units().
 
     Returns:
         List of dimension names.
     """
-    return sorted([d.name for d in all_dimensions()])
+    session = _get_session(ctx)
+    return sorted(_all_known_dimensions(session).keys())
 
 
 # -----------------------------------------------------------------------------
@@ -1288,10 +1291,10 @@ def define_unit(
     session = _get_session(ctx)
     graph = session.get_graph()
 
-    # Validate dimension
-    known_dimensions = [d.name for d in all_dimensions()]
-    if dimension not in known_dimensions:
-        return build_unknown_dimension_error(dimension)
+    # Validate dimension (built-in or session-defined via extend_basis)
+    known_dims = _all_known_dimensions(session)
+    if dimension not in known_dims:
+        return build_unknown_dimension_error(dimension, session=session)
 
     # Check for duplicate unit name (Issue 1: re-registration destroys edges)
     existing = graph.resolve_unit(name)
@@ -1322,21 +1325,28 @@ def define_unit(
                 ],
             )
 
-    # Create unit definition and materialize
-    try:
-        unit_def = UnitDef(
-            name=name,
-            dimension=dimension,
-            aliases=tuple(aliases),
-        )
-        unit = unit_def.materialize()
-    except PackageLoadError as e:
-        return ConversionError(
-            error=str(e),
-            error_type="invalid_input",
-            parameter="dimension",
-            hints=["Use list_dimensions() to see available dimensions"],
-        )
+    # Create unit: branch on session-scoped (extended-basis) vs built-in dimension
+    session_dims = session.get_session_dimensions()
+    if dimension in session_dims:
+        # Session-scoped dimension from an extended basis — bypass UnitDef
+        # (which only knows built-in dimensions) and construct Unit directly.
+        dim_obj = session_dims[dimension]
+        unit = Unit(name=name, dimension=dim_obj, aliases=tuple(aliases))
+    else:
+        try:
+            unit_def = UnitDef(
+                name=name,
+                dimension=dimension,
+                aliases=tuple(aliases),
+            )
+            unit = unit_def.materialize()
+        except PackageLoadError as e:
+            return ConversionError(
+                error=str(e),
+                error_type="invalid_input",
+                parameter="dimension",
+                hints=["Use list_dimensions() to see available dimensions"],
+            )
 
     # Register in session graph
     graph.register_unit(unit)
@@ -2800,7 +2810,9 @@ def _get_dimension_vector(unit) -> str:
     """Get the dimensional vector signature for a unit.
 
     Returns a string like "M·L²·T⁻²·N⁻¹" representing the dimensional
-    signature of the unit in canonical KOQ order.
+    signature of the unit in canonical KOQ order. Components beyond the SI
+    seven (e.g. ``information``/``B`` or extended-basis components) are
+    appended in basis-iteration order after the SI canonical block.
     """
     if unit is None:
         return "1"
@@ -2828,45 +2840,59 @@ def _get_dimension_vector(unit) -> str:
             exp = vec[basis_name]
         except (KeyError, TypeError):
             continue
-
         if exp == 0:
             continue
-        elif exp == 1:
-            components.append(symbol)
-        elif exp == 2:
-            components.append(f"{symbol}²")
-        elif exp == 3:
-            components.append(f"{symbol}³")
-        elif exp == -1:
-            components.append(f"{symbol}⁻¹")
-        elif exp == -2:
-            components.append(f"{symbol}⁻²")
-        elif exp == -3:
-            components.append(f"{symbol}⁻³")
-        else:
-            components.append(f"{symbol}^{exp}")
+        components.append(_format_exponent(symbol, exp))
+
+    # Second pass: components beyond the SI seven (e.g. ``information`` in the
+    # built-in SI basis, or any extended-basis component). These are appended
+    # in basis-declaration order.
+    si_names = {basis_name for _, basis_name in koq_order}
+    basis = getattr(vec, "basis", None)
+    if basis is not None:
+        for bc in basis:
+            if bc.name in si_names:
+                continue
+            try:
+                exp = vec[bc.name]
+            except (KeyError, TypeError):
+                continue
+            if exp == 0:
+                continue
+            symbol = bc.symbol if bc.symbol is not None else bc.name[0].upper()
+            components.append(_format_exponent(symbol, exp))
 
     return "·".join(components) if components else "1"
 
 
-def _normalize_dimension_vector(vector_str: str) -> str:
+def _normalize_dimension_vector(vector_str: str, session: SessionState | None = None) -> str:
     """Normalize a dimension vector string to canonical KOQ order.
 
     Takes a vector like "M·L²·T⁻²·N⁻¹·Θ⁻¹" and returns it in canonical order
-    "M·L²·T⁻²·Θ⁻¹·N⁻¹" (M, L, T, I, Θ, N, J).
-
-    This ensures consistent comparison regardless of input order.
+    "M·L²·T⁻²·Θ⁻¹·N⁻¹" (M, L, T, I, Θ, N, J). When ``session`` is provided,
+    extended-basis symbols are accepted and appended after the SI block in
+    declaration order.
     """
     import re
 
-    # KOQ canonical order
+    # KOQ canonical order (SI symbols first)
     koq_order = ["M", "L", "T", "I", "Θ", "N", "J"]
 
-    # Parse each component from the vector string
-    # Components are separated by · and may have exponents like ², ³, ⁻¹, ⁻², ^-1, etc.
+    # Extend with session symbols (deduplicated, declaration order preserved)
+    if session is not None:
+        for basis_info in session.get_extended_bases().values():
+            for _, comp_symbol, _ in basis_info.additional_components:
+                if comp_symbol and comp_symbol not in koq_order:
+                    koq_order.append(comp_symbol)
+
+    # Build a regex that prefers longer symbols first (avoid e.g. matching "M"
+    # inside a 2-char extended symbol).
+    sorted_symbols = sorted(koq_order, key=len, reverse=True)
+    symbol_pattern = "|".join(re.escape(s) for s in sorted_symbols)
+    symbol_re = re.compile(rf'^({symbol_pattern})(.*)$')
+
     exponents: dict[str, int] = {}
 
-    # Split by · (middle dot)
     parts = vector_str.split("·")
 
     for part in parts:
@@ -2874,16 +2900,13 @@ def _normalize_dimension_vector(vector_str: str) -> str:
         if not part:
             continue
 
-        # Match symbol and optional exponent
-        # Symbols: M, L, T, I, Θ, N, J
-        # Exponents: ², ³, ⁻¹, ⁻², ⁻³, ^N, or none (implies 1)
-        match = re.match(r'^([MLTIΘNJ])(.*)$', part)
+        match = symbol_re.match(part)
         if not match:
             # Try alternative theta representations
-            match = re.match(r'^(Theta|θ)(.*)$', part, re.IGNORECASE)
-            if match:
+            alt = re.match(r'^(Theta|θ)(.*)$', part, re.IGNORECASE)
+            if alt:
                 symbol = "Θ"
-                exp_str = match.group(2)
+                exp_str = alt.group(2)
             else:
                 continue  # Unknown symbol, skip
         else:
@@ -2932,39 +2955,41 @@ def _normalize_dimension_vector(vector_str: str) -> str:
         exp = exponents.get(symbol, 0)
         if exp == 0:
             continue
-        elif exp == 1:
-            components.append(symbol)
-        elif exp == 2:
-            components.append(f"{symbol}²")
-        elif exp == 3:
-            components.append(f"{symbol}³")
-        elif exp == -1:
-            components.append(f"{symbol}⁻¹")
-        elif exp == -2:
-            components.append(f"{symbol}⁻²")
-        elif exp == -3:
-            components.append(f"{symbol}⁻³")
-        else:
-            components.append(f"{symbol}^{exp}")
+        components.append(_format_exponent(symbol, exp))
 
     return "·".join(components) if components else "1"
 
 
-def _parse_dimension_to_vector(dimension_str: str) -> str | None:
+def _parse_dimension_to_vector(
+    dimension_str: str,
+    session: SessionState | None = None,
+) -> str | None:
     """Parse a dimension string to a vector signature.
 
-    Accepts either:
-    - Human-readable: "energy/amount_of_substance", "energy/temperature"
-    - Vector notation: "M·L²·T⁻²·N⁻¹"
+    Accepts:
+    - Vector notation: ``"M·L²·T⁻²·N⁻¹"``
+    - Human-readable named dimension: ``"energy"``, ``"mass"``
+    - Compound expression: ``"mass/time"``, ``"mass*length/time^2"``
+    - Bare symbol: ``"M"``, ``"L"``
+    - Dimensionless: ``"dimensionless"``, ``"1"``, ``""``
 
-    Returns the vector signature in canonical order, or None if parsing fails.
+    When ``session`` is provided, extended-basis component names and symbols
+    are accepted alongside the SI vocabulary.
+
+    Returns the vector signature in canonical order, or ``None`` if parsing
+    fails.
     """
-    # If it's already in vector notation, normalize to canonical order
-    if any(c in dimension_str for c in ["·", "²", "³", "⁻"]):
-        return _normalize_dimension_vector(dimension_str)
+    # Dimensionless papercut
+    stripped = dimension_str.strip()
+    if stripped == "" or stripped == "1" or stripped.lower() == "dimensionless":
+        return "1"
 
-    # Try to parse as human-readable dimension
-    # Common patterns: "X", "X/Y", "X/Y/Z", "X*Y/Z"
+    # If it's already in vector notation, normalize to canonical order.
+    if any(c in dimension_str for c in ["·", "²", "³", "⁻"]):
+        return _normalize_dimension_vector(dimension_str, session=session)
+
+    # Pure-name and composite patterns. Names map to single-symbol vectors
+    # where possible so they participate in compound parsing.
     known_vectors = {
         # Pure dimensions
         "energy": "M·L²·T⁻²",
@@ -2975,6 +3000,8 @@ def _parse_dimension_to_vector(dimension_str: str) -> str | None:
         "amount_of_substance": "N",
         "current": "I",
         "luminosity": "J",
+        "luminous_intensity": "J",
+        "information": "B",
         # Composite patterns
         "energy/amount_of_substance": "M·L²·T⁻²·N⁻¹",
         "energy/temperature": "M·L²·T⁻²·Θ⁻¹",
@@ -2982,8 +3009,42 @@ def _parse_dimension_to_vector(dimension_str: str) -> str | None:
         "energy/(temperature·amount_of_substance)": "M·L²·T⁻²·Θ⁻¹·N⁻¹",
     }
 
+    # Extended-basis component names → their symbols.
+    extra_symbols: list[str] = []
+    if session is not None:
+        for basis_info in session.get_extended_bases().values():
+            for comp_name, comp_symbol, _ in basis_info.additional_components:
+                if comp_symbol and comp_name:
+                    known_vectors.setdefault(comp_name.lower(), comp_symbol)
+                    if comp_symbol not in extra_symbols:
+                        extra_symbols.append(comp_symbol)
+
     normalized = dimension_str.lower().replace(" ", "")
-    return known_vectors.get(normalized)
+    direct = known_vectors.get(normalized)
+    if direct is not None:
+        # Already canonical; pass through normalize to enforce ordering when
+        # an extended session may shift the canonical order.
+        if any(c in direct for c in ["·", "²", "³", "⁻"]):
+            return _normalize_dimension_vector(direct, session=session)
+        return direct
+
+    # Bare-symbol papercut (e.g. "M" or "$"). Match against the union of SI
+    # symbols and any extended symbols.
+    si_symbols = {"M", "L", "T", "I", "Θ", "N", "J", "B"}
+    candidate_symbols = si_symbols | set(extra_symbols)
+    if dimension_str.strip() in candidate_symbols:
+        return dimension_str.strip()
+
+    # Compound-expression fallback (e.g. "mass/time" → "M·T⁻¹"). Restricted to
+    # single-symbol bases; composite derived dims are rejected.
+    if "/" in dimension_str or "*" in dimension_str or "·" in dimension_str:
+        return _parse_compound_dimension(
+            dimension_str.replace(" ", ""),
+            known_vectors,
+            extra_symbols=extra_symbols,
+        )
+
+    return None
 
 
 @mcp.tool()
@@ -3050,8 +3111,9 @@ def define_quantity_kind(
             hints=["Use reset_session() to clear session kinds"],
         )
 
-    # Parse dimension to vector notation
-    vector_signature = _parse_dimension_to_vector(dimension)
+    # Parse dimension to vector notation (session-aware so extended-basis
+    # dimensions are accepted).
+    vector_signature = _parse_dimension_to_vector(dimension, session=session)
     if vector_signature is None:
         return KOQError(
             error=f"Could not parse dimension: '{dimension}'",
@@ -3346,10 +3408,10 @@ def list_quantity_kinds(
     session = _get_session(ctx)
     session_kinds = session.get_quantity_kinds()
 
-    # Parse dimension filter if provided
+    # Parse dimension filter if provided (session-aware)
     dimension_vector = None
     if dimension:
-        dimension_vector = _parse_dimension_to_vector(dimension)
+        dimension_vector = _parse_dimension_to_vector(dimension, session=session)
         # If not a known pattern, assume it's already a vector
         if dimension_vector is None:
             dimension_vector = dimension
@@ -3394,8 +3456,10 @@ def extend_basis(
     The basis is stored in session state and persists for the session lifetime.
     Use list_extended_bases() to see available bases.
 
-    Note: Phase 1 implementation is informational only. Extended bases
-    help explain disambiguation strategies but don't yet affect conversions.
+    Each additional component becomes a new dimension available to subsequent
+    `define_unit`, `define_quantity_kind`, `define_conversion`, and conversion
+    calls within the same session. The new dimensions do not affect built-in
+    SI conversions and do not persist across sessions.
 
     Args:
         name: Name for the extended basis.
@@ -3442,36 +3506,84 @@ def extend_basis(
 
     additional_components = additional_components or []
 
-    # SI base components
-    si_components = ["M (mass)", "L (length)", "T (time)", "I (current)",
-                     "Θ (temperature)", "N (amount)", "J (luminosity)"]
+    # Resolve parent basis from ucon's built-in registry.
+    from ucon.basis import Basis, BasisComponent, builtin as _basis_builtin
+    parent_basis = getattr(_basis_builtin, base, None)
+    if parent_basis is None:
+        return KOQError(
+            error=f"Unknown base: '{base}'",
+            error_type="unknown_base",
+            parameter="base",
+            hints=[f"Valid bases: {', '.join(valid_bases)}"],
+        )
 
-    # Build component list
-    components = si_components.copy()
-    additional_tuples = []
+    additional_tuples: list[tuple[str, str, str]] = []
+    new_components: list[BasisComponent] = []
     for comp in additional_components:
         comp_name = comp.get("name", "unknown")
         comp_symbol = comp.get("symbol", "?")
         comp_desc = comp.get("description", "")
-        components.append(f"{comp_symbol} ({comp_name})")
         additional_tuples.append((comp_name, comp_symbol, comp_desc))
+        new_components.append(BasisComponent(comp_name, comp_symbol))
 
-    # Store in session
+    # Materialize the runtime Basis (Phase 2). ucon's Basis constructor enforces
+    # name/symbol uniqueness across the combined component list and raises
+    # ValueError on collision — surface that as a KOQError.
+    try:
+        runtime_basis = Basis(name, list(parent_basis) + new_components)
+    except ValueError as e:
+        return KOQError(
+            error=str(e),
+            error_type="duplicate_component",
+            parameter="additional_components",
+            hints=["Choose component names and symbols that don't conflict with the parent basis or other extension components"],
+        )
+
+    # Materialize one Dimension per additional component.
+    runtime_dims: list[Dimension] = []
+    for comp_name, comp_symbol, _ in additional_tuples:
+        dim = Dimension.from_components(
+            basis=runtime_basis,
+            name=comp_name,
+            symbol=comp_symbol,
+            **{comp_name: 1},
+        )
+        runtime_dims.append(dim)
+
+    # Human-readable component summary (preserved for the response payload).
+    components_display = [f"{c.symbol} ({c.name})" for c in runtime_basis]
+
+    # Register session dimensions so downstream tools can resolve them.
+    session_dims = session.get_session_dimensions()
+    for dim in runtime_dims:
+        if dim.name is not None:
+            session_dims[dim.name] = dim
+
     basis_info = ExtendedBasisInfo(
         name=name,
         base=base,
-        components=tuple(components),
+        components=tuple(components_display),
         additional_components=tuple(additional_tuples),
+        runtime_basis=runtime_basis,
+        runtime_dimensions=tuple(runtime_dims),
     )
     session.register_extended_basis(basis_info)
+
+    new_dim_names = [d.name for d in runtime_dims if d.name is not None]
+    if new_dim_names:
+        msg = (
+            f"Extended basis '{name}' created with {len(components_display)} components. "
+            f"New dimensions available: {', '.join(new_dim_names)}."
+        )
+    else:
+        msg = f"Extended basis '{name}' created with {len(components_display)} components."
 
     return ExtendedBasisResult(
         success=True,
         name=name,
         base=base,
-        components=components,
-        message=f"Extended basis '{name}' created with {len(components)} components. "
-                f"(Phase 1: informational only)",
+        components=components_display,
+        message=msg,
     )
 
 
