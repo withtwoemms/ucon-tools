@@ -273,15 +273,16 @@ def test_convert_uses_dispatcher_resolved_unit_system_under_preview_tier():
     assert custom_graph is not None
 
     # Wrap the custom graph in a UnitSystem: ProcessBase.unit_system is
-    # now a UnitSystem (v1.8 lift), so we override the `conversions`
-    # field of a globals-snapshot to point at our custom graph.
+    # now a UnitSystem (v1.8 lift), so we override the
+    # `conversion_graph` field of a globals-snapshot to point at our
+    # custom graph.
     base_system = UnitSystem.from_globals()
     custom_system = UnitSystem(
         basis=base_system.basis,
         units=base_system.units,
         dimensions=base_system.dimensions,
         base_units=base_system.base_units,
-        conversions=custom_graph,
+        conversion_graph=custom_graph,
         basis_graph=base_system.basis_graph,
         contexts=base_system.contexts,
         constants=base_system.constants,
