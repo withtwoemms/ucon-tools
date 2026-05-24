@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-05-24
+
+Compatibility release: adapts the MCP session layer to ucon v1.12.0,
+which removed the `ucon._loader` module and renamed the
+`UnitSystem.conversions` field to `conversion_graph`. No change to the
+ucon-tools public API; tool signatures, response shapes, and bundle
+semantics are unchanged.
+
+### Fixed
+
+- **`DefaultSessionState.get_unit_system()` no longer references the
+  removed `ucon._loader` module.** As of ucon v1.12.0 the registries
+  (`get_units`, `get_constants`) and the basis-graph helpers
+  (`get_basis_graph`, `get_default_basis`) that this method previously
+  reached for via deferred imports have been deleted. Every MCP tool
+  call funnels through this method to build the effective
+  `UnitSystem` for the request, so against ucon 1.12.x every tool was
+  raising `ModuleNotFoundError: No module named 'ucon._loader'` at
+  resolve time. The body now snapshots from the canonical entry point
+  — `from ucon import active` — and overrides only the
+  `conversion_graph` field with the session-owned graph. The five
+  previous private-surface imports collapse to one public one.
+- **`UnitSystem(conversions=…)` kwarg renamed to `conversion_graph=…`**
+  in `tests/ucon/tools/mcp/test_server_dispatch_wiring.py` to match
+  the v1.12 field rename. ucon retains `conversions` as a deprecated
+  alias until v2.0, but eliminating the warning here keeps the
+  ucon-tools suite warning-clean against the deprecation path.
+
+### Changed
+
+- **Dependency floor bumped to `ucon>=1.12.0a1`** (from `>=1.8.3`).
+  The explicit pre-release tag in the specifier opts pip into
+  resolving the v1.12 alpha without `--prerelease=allow` at install
+  time; once ucon 1.12.0 final ships, a follow-up patch will tighten
+  the floor to `ucon>=1.12.0`. Downstream installations that pin
+  `ucon<1.12` should stay on ucon-tools 0.5.3.
+- **`tests/ucon/tools/mcp/system/test_overlay.py::_system()` adapted
+  to v1.12's identity contract for `UnitSystem.from_globals()`.** In
+  v1.12, `from_globals()` returns the cached active system (same
+  identity across calls); the fixture previously relied on the
+  pre-v1.12 behaviour of minting a fresh value each call to satisfy
+  the `eff_a.unit_system is not eff_b.unit_system` invariant in
+  `test_session_policy_does_not_leak_across_independent_overlays`.
+  The fixture now wraps the call in `dataclasses.replace(...)` to
+  produce identity-distinct values while preserving content. The
+  policy itself is unchanged; the test docstring is updated to record
+  the new constraint.
+- **`process_base.from_globals` docstring** no longer names the
+  deleted `ucon._loader` module; it now describes the registries as
+  snapshotted "from the active `UnitSystem`."
+
 ## [0.5.3] - 2026-05-17
 
 ### Fixed
