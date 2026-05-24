@@ -67,8 +67,9 @@ class ProcessBase:
         Defaults each field by introspecting the running process:
 
         - `unit_system`: ``UnitSystem.from_globals()`` (snapshots the
-          live registries from ``ucon._loader``, ``ucon.dimension``,
-          ``ucon.basis.graph``, and ``ucon.graph`` by reference).
+          live registries from the active ``UnitSystem`` —
+          ``ucon.units``, ``ucon.constants``, ``ucon.dimension``,
+          ``ucon.basis.graph``, and ``ucon.graph`` — by reference).
         - `tools`: names of every `@mcp.tool()` registered on the
           module-level `FastMCP` instance in `ucon.tools.mcp.server`.
         - `formulas`: names returned by the formula registry's

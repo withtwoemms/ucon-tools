@@ -18,6 +18,8 @@ Invariants under test:
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from ucon.system import UnitSystem
@@ -41,11 +43,12 @@ from ucon.tools.mcp.system import (
 def _system() -> UnitSystem:
     """Build a fresh ``UnitSystem`` for use as a `base` sentinel.
 
-    Identity matters in these tests (we assert ``eff.unit_system is X``);
-    snapshotting globals each call gives a distinct ``UnitSystem`` value
-    on every invocation.
+    Identity matters in these tests (we assert ``eff.unit_system is X``).
+    As of ucon v1.12, ``UnitSystem.from_globals()`` returns the cached
+    active system (same identity across calls), so we ``replace(...)``
+    it to mint a distinct value per invocation while preserving content.
     """
-    return UnitSystem.from_globals()
+    return replace(UnitSystem.from_globals())
 
 
 class _StubOverlay:

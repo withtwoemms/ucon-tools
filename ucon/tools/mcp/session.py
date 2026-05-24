@@ -154,22 +154,26 @@ class DefaultSessionState:
         # Deferred imports: `ucon.system` and friends sit above
         # `ucon.tools.mcp.session` in the import DAG when imported
         # via the MCP server.
-        from ucon._loader import get_constants, get_units
-        from ucon.basis.graph import get_basis_graph, get_default_basis
-        from ucon.dimension import _DIMENSION_ATTRS
+        #
+        # As of ucon v1.12.0 the registries are reachable from the
+        # active ``UnitSystem`` rather than the deleted
+        # ``ucon._loader`` module. We snapshot from ``active()`` and
+        # override only the conversion graph with the session-owned
+        # one.
+        from ucon import active
         from ucon.system import UnitSystem
-        from ucon import units as _units_module
 
         graph = self.get_graph()
+        live = active()
         return UnitSystem(
-            basis=get_default_basis(),
-            units=get_units(),
-            dimensions=_DIMENSION_ATTRS,
-            base_units=_units_module.si,
-            conversions=graph,
-            basis_graph=get_basis_graph(),
+            basis=live.basis,
+            units=live.units,
+            dimensions=live.dimensions,
+            base_units=live.base_units,
+            conversion_graph=graph,
+            basis_graph=live.basis_graph,
             contexts=getattr(graph, "_contexts", {}),
-            constants=get_constants(),
+            constants=live.constants,
         )
 
     def get_constants(self) -> dict[str, "Constant"]:
