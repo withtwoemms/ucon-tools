@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.4] - 2026-05-24
-
-Compatibility release: adapts the MCP session layer to ucon v1.12.0,
-which removed the `ucon._loader` module and renamed the
-`UnitSystem.conversions` field to `conversion_graph`. No change to the
-ucon-tools public API; tool signatures, response shapes, and bundle
-semantics are unchanged.
+Compatibility work pending the ucon v1.12.0 final release. ucon
+v1.12.0 removed the `ucon._loader` module and renamed the
+`UnitSystem.conversions` field to `conversion_graph`. The changes
+below adapt the MCP session layer; no change to the ucon-tools public
+API (tool signatures, response shapes, and bundle semantics are
+unchanged). Held back from release until ucon 1.12.0 ships final;
+once tagged, this entry becomes the next patch (intended `0.5.4`)
+with the dependency floor tightened from `ucon>=1.12.0a1` to
+`ucon>=1.12.0`.
 
 ### Fixed
 
@@ -40,9 +42,9 @@ semantics are unchanged.
 - **Dependency floor bumped to `ucon>=1.12.0a1`** (from `>=1.8.3`).
   The explicit pre-release tag in the specifier opts pip into
   resolving the v1.12 alpha without `--prerelease=allow` at install
-  time; once ucon 1.12.0 final ships, a follow-up patch will tighten
-  the floor to `ucon>=1.12.0`. Downstream installations that pin
-  `ucon<1.12` should stay on ucon-tools 0.5.3.
+  time. The floor will be tightened to `ucon>=1.12.0` as part of
+  cutting the release once ucon 1.12.0 final ships. Downstream
+  installations that pin `ucon<1.12` should stay on ucon-tools 0.5.3.
 - **`tests/ucon/tools/mcp/system/test_overlay.py::_system()` adapted
   to v1.12's identity contract for `UnitSystem.from_globals()`.** In
   v1.12, `from_globals()` returns the cached active system (same
