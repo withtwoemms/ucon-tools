@@ -34,14 +34,14 @@ bundle semantics are unchanged).
 - **`DefaultSessionState.get_unit_system()` migrated from
   `ucon.active()` to `ucon.active_system()` for ucon v2.0.0a1.** The
   v2.0 substrate work (`ActiveContext` per v2.0 §3.4) repointed the
-  `_active` ContextVar at a frozen dataclass, so the previous
+  `_active` ContextVar at a frozen dataclass bundling
+  `system + formulas + kinds + strict`, so the previous
   `live = active()` snapshot started raising
   `AttributeError: 'ActiveContext' object has no attribute 'basis'`
-  at the first field access on every dispatched tool. The call site
-  now uses `active_system()`, which is the typed accessor for the
-  `UnitSystem` field of the active context; behaviour is unchanged
-  against ucon 1.12.x because `active_system()` is also exported
-  there as the forward-compatible alias.
+  at the first field access on every dispatched MCP tool — the entire
+  test suite failed at `policy.resolve(...)`. The call site now uses
+  `active_system()`, the typed accessor introduced in v2.0.0a1 that
+  returns the `UnitSystem` field of the active context.
 - **`UnitSystem(conversions=…)` kwarg renamed to `conversion_graph=…`**
   in `tests/ucon/tools/mcp/test_server_dispatch_wiring.py` to match
   the v1.12 field rename. ucon retains `conversions` as a deprecated
@@ -50,12 +50,14 @@ bundle semantics are unchanged).
 
 ### Changed
 
-- **Dependency floor bumped to `ucon>=1.12.0a1`** (from `>=1.8.3`).
-  The explicit pre-release tag in the specifier opts pip into
-  resolving the v1.12 alpha without `--prerelease=allow` at install
-  time. The floor will be tightened to `ucon>=1.12.0` as part of
-  cutting the release once ucon 1.12.0 final ships. Downstream
-  installations that pin `ucon<1.12` should stay on ucon-tools 0.5.3.
+- **Dependency floor bumped to `ucon>=2.0.0a1`** (from `>=1.8.3`).
+  The original target was `>=1.12.0a1`, but ucon's v1.10 / v1.11 /
+  v1.12 work was folded into the v2.0 line and shipped as v2.0.0a1
+  alongside the `ActiveContext` substrate. The explicit pre-release
+  tag opts pip into resolving the v2.0 alpha without
+  `--prerelease=allow` at install time; the floor will be tightened
+  to `ucon>=2.0.0` once v2.0 ships final. Downstream installations
+  that pin `ucon<2.0` should stay on ucon-tools 0.5.3.
 - **`tests/ucon/tools/mcp/system/test_overlay.py::_system()` adapted
   to v1.12's identity contract for `UnitSystem.from_globals()`.** In
   v1.12, `from_globals()` returns the cached active system (same
