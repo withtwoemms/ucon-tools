@@ -7,15 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Compatibility work pending the ucon v1.12.0 final release. ucon
-v1.12.0 removed the `ucon._loader` module and renamed the
-`UnitSystem.conversions` field to `conversion_graph`. The changes
-below adapt the MCP session layer; no change to the ucon-tools public
-API (tool signatures, response shapes, and bundle semantics are
-unchanged). Held back from release until ucon 1.12.0 ships final;
-once tagged, this entry becomes the next patch (intended `0.5.4`)
-with the dependency floor tightened from `ucon>=1.12.0a1` to
-`ucon>=1.12.0`.
+Compatibility work spanning the ucon v1.12.0 and v2.0.0a1 releases.
+ucon v1.12.0 removed the `ucon._loader` module and renamed the
+`UnitSystem.conversions` field to `conversion_graph`. ucon v2.0.0a1
+then made `ucon.active()` a BREAKING change: it now returns an
+`ActiveContext` (a frozen dataclass bundling
+`system + formulas + kinds + strict`) rather than a `UnitSystem`. The
+changes below adapt the MCP session layer to both releases; no change
+to the ucon-tools public API (tool signatures, response shapes, and
+bundle semantics are unchanged).
 
 ### Fixed
 
@@ -28,9 +28,20 @@ with the dependency floor tightened from `ucon>=1.12.0a1` to
   `UnitSystem` for the request, so against ucon 1.12.x every tool was
   raising `ModuleNotFoundError: No module named 'ucon._loader'` at
   resolve time. The body now snapshots from the canonical entry point
-  — `from ucon import active` — and overrides only the
-  `conversion_graph` field with the session-owned graph. The five
-  previous private-surface imports collapse to one public one.
+  and overrides only the `conversion_graph` field with the
+  session-owned graph. The five previous private-surface imports
+  collapse to one public one.
+- **`DefaultSessionState.get_unit_system()` migrated from
+  `ucon.active()` to `ucon.active_system()` for ucon v2.0.0a1.** The
+  v2.0 substrate work (`ActiveContext` per v2.0 §3.4) repointed the
+  `_active` ContextVar at a frozen dataclass bundling
+  `system + formulas + kinds + strict`, so the previous
+  `live = active()` snapshot started raising
+  `AttributeError: 'ActiveContext' object has no attribute 'basis'`
+  at the first field access on every dispatched MCP tool — the entire
+  test suite failed at `policy.resolve(...)`. The call site now uses
+  `active_system()`, the typed accessor introduced in v2.0.0a1 that
+  returns the `UnitSystem` field of the active context.
 - **`UnitSystem(conversions=…)` kwarg renamed to `conversion_graph=…`**
   in `tests/ucon/tools/mcp/test_server_dispatch_wiring.py` to match
   the v1.12 field rename. ucon retains `conversions` as a deprecated
@@ -39,12 +50,14 @@ with the dependency floor tightened from `ucon>=1.12.0a1` to
 
 ### Changed
 
-- **Dependency floor bumped to `ucon>=1.12.0a1`** (from `>=1.8.3`).
-  The explicit pre-release tag in the specifier opts pip into
-  resolving the v1.12 alpha without `--prerelease=allow` at install
-  time. The floor will be tightened to `ucon>=1.12.0` as part of
-  cutting the release once ucon 1.12.0 final ships. Downstream
-  installations that pin `ucon<1.12` should stay on ucon-tools 0.5.3.
+- **Dependency floor bumped to `ucon>=2.0.0a1`** (from `>=1.8.3`).
+  The original target was `>=1.12.0a1`, but ucon's v1.10 / v1.11 /
+  v1.12 work was folded into the v2.0 line and shipped as v2.0.0a1
+  alongside the `ActiveContext` substrate. The explicit pre-release
+  tag opts pip into resolving the v2.0 alpha without
+  `--prerelease=allow` at install time; the floor will be tightened
+  to `ucon>=2.0.0` once v2.0 ships final. Downstream installations
+  that pin `ucon<2.0` should stay on ucon-tools 0.5.3.
 - **`tests/ucon/tools/mcp/system/test_overlay.py::_system()` adapted
   to v1.12's identity contract for `UnitSystem.from_globals()`.** In
   v1.12, `from_globals()` returns the cached active system (same

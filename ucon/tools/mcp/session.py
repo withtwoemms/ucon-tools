@@ -157,14 +157,16 @@ class DefaultSessionState:
         #
         # As of ucon v1.12.0 the registries are reachable from the
         # active ``UnitSystem`` rather than the deleted
-        # ``ucon._loader`` module. We snapshot from ``active()`` and
+        # ``ucon._loader`` module. As of ucon v2.0.0a1 the ``_active``
+        # ContextVar carries an ``ActiveContext`` payload, so we use
+        # ``active_system()`` to obtain the live ``UnitSystem`` and
         # override only the conversion graph with the session-owned
         # one.
-        from ucon import active
+        from ucon import active_system
         from ucon.system import UnitSystem
 
         graph = self.get_graph()
-        live = active()
+        live = active_system()
         return UnitSystem(
             basis=live.basis,
             units=live.units,
