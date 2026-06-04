@@ -46,9 +46,9 @@ class SessionState(Protocol):
         """Get the session's :class:`~ucon.system.UnitSystem`.
 
         The returned system wraps :meth:`get_graph` as its
-        ``conversions``; v1.8 reach-through paths (basis graph,
+        ``conversion_graph``; reach-through paths (basis graph,
         constants, contexts) read from the surrounding globals via
-        ``UnitSystem.from_globals``-style snapshotting.
+        ``active_system()``-style snapshotting.
         """
         ...
 

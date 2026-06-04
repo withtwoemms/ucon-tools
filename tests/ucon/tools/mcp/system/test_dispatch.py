@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ucon.system import UnitSystem
+from ucon.system import UnitSystem, active_system
 from ucon.tools.mcp.system import (
     ActiveBundle,
     CapabilityBundle,
@@ -63,7 +63,7 @@ def _make_dispatcher(
 ) -> Dispatcher:
     return Dispatcher(
         process_base=process_base or ProcessBase(
-            unit_system=UnitSystem.from_globals(),
+            unit_system=active_system(),
             tools=frozenset({"convert"}),
             formulas=frozenset({"bmi"}),
             catalog=None,
@@ -124,7 +124,7 @@ def _active(
 # -----------------------------------------------------------------------------
 
 def test_prepare_returns_effective_capabilities_for_base_tool():
-    base_system = UnitSystem.from_globals()
+    base_system = active_system()
     base = ProcessBase(
         unit_system=base_system,
         tools=frozenset({"convert"}),
@@ -321,7 +321,7 @@ class _StubOverlay:
 
 
 def test_standard_tier_consults_session_overlay():
-    overlay_system = UnitSystem.from_globals()
+    overlay_system = active_system()
     overlay = _StubOverlay(overlay_system, empty=False)
     dispatcher = _make_dispatcher(default_tier="standard")
     eff = dispatcher.prepare("convert", session_overlay=overlay)
@@ -332,7 +332,7 @@ def test_preview_tier_drops_caller_session_overlay():
     # PREVIEW.mutation_allowed is False, so any caller-supplied overlay
     # must be ignored (rather than reach OperatorOverlayPolicy and raise
     # SessionMutationRejected).
-    process_system = UnitSystem.from_globals()
+    process_system = active_system()
     base = ProcessBase(
         unit_system=process_system,
         tools=frozenset({"convert"}),
@@ -343,7 +343,7 @@ def test_preview_tier_drops_caller_session_overlay():
         process_base=base,
         default_tier="preview",
     )
-    overlay = _StubOverlay(UnitSystem.from_globals(), empty=False)
+    overlay = _StubOverlay(active_system(), empty=False)
     eff = dispatcher.prepare("convert", session_overlay=overlay)
     # Effective unit_system is the process base, not the overlay.
     assert eff.unit_system is process_system
@@ -386,7 +386,7 @@ def test_unknown_overlay_policy_raises_key_error():
     # Construct a dispatcher whose tier names a missing policy.
     dispatcher = Dispatcher(
         process_base=ProcessBase(
-            unit_system=UnitSystem.from_globals(),
+            unit_system=active_system(),
             tools=frozenset({"convert"}),
             formulas=frozenset(),
             catalog=None,

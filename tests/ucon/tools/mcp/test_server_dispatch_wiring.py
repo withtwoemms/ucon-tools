@@ -24,7 +24,7 @@ import asyncio
 import pytest
 
 from ucon.graph import get_default_graph, using_conversion_graph
-from ucon.system import UnitSystem
+from ucon.system import UnitSystem, active_system
 from ucon.tools.mcp.server import (
     _build_dispatcher,
     _build_inline_graph,
@@ -94,9 +94,9 @@ def test_build_dispatcher_wires_both_overlay_policies():
 def test_build_dispatcher_process_base_uses_default_graph():
     d = _build_dispatcher()
     # ProcessBase.unit_system is a UnitSystem (v1.8 lift); its
-    # `conversions` field references ucon's default graph by snapshot.
+    # `conversion_graph` field references ucon's default graph by snapshot.
     assert isinstance(d.process_base.unit_system, UnitSystem)
-    assert d.process_base.unit_system.conversions is get_default_graph()
+    assert d.process_base.unit_system.conversion_graph is get_default_graph()
 
 
 def test_build_dispatcher_process_base_tools_include_registered_tools():
@@ -235,7 +235,7 @@ def test_convert_raises_capability_not_available_when_tool_gated_off():
     """
     locked_down = Dispatcher(
         process_base=ProcessBase(
-            unit_system=UnitSystem.from_globals(),
+            unit_system=active_system(),
             tools=frozenset(),  # convert is NOT advertised
             formulas=frozenset(),
             catalog=None,
@@ -276,7 +276,7 @@ def test_convert_uses_dispatcher_resolved_unit_system_under_preview_tier():
     # now a UnitSystem (v1.8 lift), so we override the
     # `conversion_graph` field of a globals-snapshot to point at our
     # custom graph.
-    base_system = UnitSystem.from_globals()
+    base_system = active_system()
     custom_system = UnitSystem(
         basis=base_system.basis,
         units=base_system.units,

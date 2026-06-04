@@ -22,7 +22,7 @@ from dataclasses import replace
 
 import pytest
 
-from ucon.system import UnitSystem
+from ucon.system import UnitSystem, active_system
 from ucon.tools.mcp.session import DefaultSessionState
 from ucon.tools.mcp.system import (
     CapabilityBundle,
@@ -44,11 +44,11 @@ def _system() -> UnitSystem:
     """Build a fresh ``UnitSystem`` for use as a `base` sentinel.
 
     Identity matters in these tests (we assert ``eff.unit_system is X``).
-    As of ucon v1.12, ``UnitSystem.from_globals()`` returns the cached
+    As of ucon v1.12, ``active_system()`` returns the cached
     active system (same identity across calls), so we ``replace(...)``
     it to mint a distinct value per invocation while preserving content.
     """
-    return replace(UnitSystem.from_globals())
+    return replace(active_system())
 
 
 class _StubOverlay:
@@ -337,9 +337,9 @@ def test_session_state_overlay_non_empty_when_quantity_kind_registered():
 def test_session_state_overlay_get_unit_system_returns_session_graph():
     state = DefaultSessionState()
     overlay = SessionStateOverlay(session=state)
-    # The overlay now returns a UnitSystem; its `conversions` field
+    # The overlay now returns a UnitSystem; its `conversion_graph` field
     # is the session's mutable graph by reference.
-    assert overlay.get_unit_system().conversions is state.get_graph()
+    assert overlay.get_unit_system().conversion_graph is state.get_graph()
 
 
 def test_session_state_overlay_wired_through_session_policy():
@@ -356,5 +356,5 @@ def test_session_state_overlay_wired_through_session_policy():
     )
     # Effective unit_system carries the session's mutable graph, not
     # the process base.
-    assert eff.unit_system.conversions is state.get_graph()
+    assert eff.unit_system.conversion_graph is state.get_graph()
     assert isinstance(eff, EffectiveCapabilities)

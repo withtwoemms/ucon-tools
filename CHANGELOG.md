@@ -7,18 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Compatibility work spanning the ucon v1.12.0 and v2.0.0a1 releases.
-ucon v1.12.0 removed the `ucon._loader` module and renamed the
-`UnitSystem.conversions` field to `conversion_graph`. ucon v2.0.0a1
-then made `ucon.active()` a BREAKING change: it now returns an
-`ActiveContext` (a frozen dataclass bundling
-`system + formulas + kinds + strict`) rather than a `UnitSystem`. The
-changes below adapt the MCP session layer to both releases; no change
-to the ucon-tools public API (tool signatures, response shapes, and
-bundle semantics are unchanged).
+Compatibility work spanning ucon v2.0.0a1 and v2.0.0a2.
+
+ucon v2.0.0a2 completed the deprecation cleanup started in v2.0.0a1:
+`UnitSystem.from_globals()` was removed (replaced by `active_system()`),
+and the `UnitSystem.conversions` deprecated alias was dropped (the field
+is now exclusively `conversion_graph`). The changes below adapt the MCP
+server and its test suite to these removals; no change to the ucon-tools
+public API (tool signatures, response shapes, and bundle semantics are
+unchanged).
 
 ### Fixed
 
+- **`ProcessBase.from_globals()` migrated from `UnitSystem.from_globals()`
+  to `active_system()`.** ucon v2.0.0a2 removed the `from_globals()`
+  class method from `UnitSystem` as part of the v2.0 deprecation
+  cleanup. Every MCP tool call funnels through `ProcessBase.from_globals()`
+  at dispatcher construction time, so the entire test suite (506 tests)
+  was raising `AttributeError: type object 'UnitSystem' has no attribute
+  'from_globals'`. The call site now uses `active_system()`, the typed
+  accessor that returns the `UnitSystem` from the active `ActiveContext`.
+- **All `.conversions` reach-through sites migrated to `.conversion_graph`.**
+  ucon v2.0.0a2 dropped the deprecated `conversions` alias on
+  `UnitSystem`. Three source sites in `server.py` and one each in
+  `value_types.py` docstring, `process_base.py` docstring, and
+  `session.py` docstring were updated. Five test files were updated
+  correspondingly.
 - **`DefaultSessionState.get_unit_system()` no longer references the
   removed `ucon._loader` module.** As of ucon v1.12.0 the registries
   (`get_units`, `get_constants`) and the basis-graph helpers
@@ -42,36 +56,30 @@ bundle semantics are unchanged).
   test suite failed at `policy.resolve(...)`. The call site now uses
   `active_system()`, the typed accessor introduced in v2.0.0a1 that
   returns the `UnitSystem` field of the active context.
-- **`UnitSystem(conversions=…)` kwarg renamed to `conversion_graph=…`**
-  in `tests/ucon/tools/mcp/test_server_dispatch_wiring.py` to match
-  the v1.12 field rename. ucon retains `conversions` as a deprecated
-  alias until v2.0, but eliminating the warning here keeps the
-  ucon-tools suite warning-clean against the deprecation path.
 
 ### Changed
 
-- **Dependency floor bumped to `ucon>=2.0.0a1`** (from `>=1.8.3`).
-  The original target was `>=1.12.0a1`, but ucon's v1.10 / v1.11 /
-  v1.12 work was folded into the v2.0 line and shipped as v2.0.0a1
-  alongside the `ActiveContext` substrate. The explicit pre-release
-  tag opts pip into resolving the v2.0 alpha without
-  `--prerelease=allow` at install time; the floor will be tightened
-  to `ucon>=2.0.0` once v2.0 ships final. Downstream installations
-  that pin `ucon<2.0` should stay on ucon-tools 0.5.3.
+- **Dependency floor bumped to `ucon>=2.0.0a2`** (from `>=2.0.0a1`).
+  v2.0.0a2 ships the Phase 4 canonical identity cleanup and the full
+  deprecation removal wave (`from_globals`, `conversions` alias,
+  `get_unit_by_name`, `_none`, `using_graph`, `convert_to`). The
+  floor will be tightened to `ucon>=2.0.0` once v2.0 ships final.
+  Downstream installations that pin `ucon<2.0` should stay on
+  ucon-tools 0.5.3.
+- **All test files migrated from `UnitSystem.from_globals()` to
+  `active_system()`.** Six test modules updated: `test_dispatch.py`,
+  `test_overlay.py`, `test_process_base.py`, `test_value_types.py`,
+  `test_server_dispatch_wiring.py`. Each adds
+  `from ucon.system import active_system` alongside the existing
+  `UnitSystem` import.
 - **`tests/ucon/tools/mcp/system/test_overlay.py::_system()` adapted
-  to v1.12's identity contract for `UnitSystem.from_globals()`.** In
-  v1.12, `from_globals()` returns the cached active system (same
-  identity across calls); the fixture previously relied on the
-  pre-v1.12 behaviour of minting a fresh value each call to satisfy
-  the `eff_a.unit_system is not eff_b.unit_system` invariant in
-  `test_session_policy_does_not_leak_across_independent_overlays`.
-  The fixture now wraps the call in `dataclasses.replace(...)` to
-  produce identity-distinct values while preserving content. The
-  policy itself is unchanged; the test docstring is updated to record
-  the new constraint.
-- **`process_base.from_globals` docstring** no longer names the
-  deleted `ucon._loader` module; it now describes the registries as
-  snapshotted "from the active `UnitSystem`."
+  to use `active_system()`.** The fixture previously relied on
+  `UnitSystem.from_globals()` wrapped in `dataclasses.replace(...)` to
+  produce identity-distinct values; it now wraps `active_system()`
+  instead.
+- **`process_base.from_globals` docstring** updated to describe the
+  unit system as sourced from `active_system()` rather than
+  `UnitSystem.from_globals()`.
 
 ## [0.5.3] - 2026-05-17
 

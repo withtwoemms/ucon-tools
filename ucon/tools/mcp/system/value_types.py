@@ -96,7 +96,7 @@ class EffectiveCapabilities:
     callers route through ``with use(eff.unit_system):`` to make the
     dispatcher-resolved system the active one. The underlying
     :class:`~ucon.graph.ConversionGraph` is reachable via
-    ``eff.unit_system.conversions`` for code paths that still
+    ``eff.unit_system.conversion_graph`` for code paths that still
     operate at graph granularity (e.g., inline-graph composition).
     """
 
