@@ -250,7 +250,7 @@ def dispatched(
        :class:`~ucon.system.UnitSystem` so reach-through paths
        (basis graph, constants, ``active()`` consumers, the algebra
        cache) see the resolved system.
-    2. ``with using_conversion_graph(eff.unit_system.conversions):``
+    2. ``with using_conversion_graph(eff.unit_system.conversion_graph):``
        — pins the conversion-graph ContextVar so ``get_default_graph``
        and parsing-graph callers see the dispatcher-resolved graph.
 
@@ -261,7 +261,7 @@ def dispatched(
     ``UnitSystem`` activation.
 
     Yields the `EffectiveCapabilities` so the tool body can read
-    ``eff.audit`` (and ``eff.unit_system`` / ``eff.unit_system.conversions``).
+    ``eff.audit`` (and ``eff.unit_system`` / ``eff.unit_system.conversion_graph``).
 
     Raises
     ------
@@ -274,7 +274,7 @@ def dispatched(
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
     with use_system(eff.unit_system), using_conversion_graph(
-        eff.unit_system.conversions
+        eff.unit_system.conversion_graph
     ):
         yield eff
 
@@ -667,7 +667,7 @@ def convert(
     # session overlay) and enters it as the ambient system. Inline definitions
     # layer on top of that resolved graph for this call only.
     with dispatched("convert", ctx) as eff:
-        base_graph = eff.unit_system.conversions
+        base_graph = eff.unit_system.conversion_graph
 
         # Build inline graph if custom definitions provided
         inline_graph, err = _build_inline_graph(custom_units, custom_edges, base_graph)

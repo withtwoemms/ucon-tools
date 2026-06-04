@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ucon.system import UnitSystem
+from ucon.system import UnitSystem, active_system
 from ucon.tools.mcp.formulas import list_formulas
 from ucon.tools.mcp.system.catalog import DEFAULT_CATALOG
 
@@ -35,7 +35,7 @@ class ProcessBase:
         conversion graph, basis graph, constants). Dispatch activates
         this system with ``with use(eff.unit_system):`` and reaches
         through to the underlying graph via
-        ``eff.unit_system.conversions`` where needed.
+        ``eff.unit_system.conversion_graph`` where needed.
     tools : frozenset[str]
         Names of MCP tools advertised by this process. Dispatch gates each
         request by `request.tool in effective.tools`.
@@ -62,14 +62,12 @@ class ProcessBase:
         formulas: frozenset[str] | None = None,
         catalog: Any = None,
     ) -> "ProcessBase":
-        """Build a `ProcessBase` from the legacy module-level state.
+        """Build a `ProcessBase` from the active unit system.
 
         Defaults each field by introspecting the running process:
 
-        - `unit_system`: ``UnitSystem.from_globals()`` (snapshots the
-          live registries from the active ``UnitSystem`` —
-          ``ucon.units``, ``ucon.constants``, ``ucon.dimension``,
-          ``ucon.basis.graph``, and ``ucon.graph`` — by reference).
+        - `unit_system`: ``active_system()`` — returns the active
+          ``UnitSystem`` from the ``ActiveContext`` ContextVar.
         - `tools`: names of every `@mcp.tool()` registered on the
           module-level `FastMCP` instance in `ucon.tools.mcp.server`.
         - `formulas`: names returned by the formula registry's
@@ -80,7 +78,7 @@ class ProcessBase:
         method has no side effects; it produces a fresh frozen value.
         """
         if unit_system is None:
-            unit_system = UnitSystem.from_globals()
+            unit_system = active_system()
         if tools is None:
             tools = _discover_registered_tools()
         if formulas is None:

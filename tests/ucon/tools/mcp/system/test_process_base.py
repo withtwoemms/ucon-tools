@@ -6,9 +6,9 @@ Tests for `ucon.tools.mcp.system.process_base.ProcessBase`.
 
 Acceptance:
 - frozen / hashable
-- `from_globals()` yields a populated value
+- `active_system()` yields a populated value
 - `unit_system` is a v1.8 :class:`~ucon.system.UnitSystem` whose
-  ``conversions`` field defaults to ``get_default_graph()``
+  ``conversion_graph`` field defaults to ``get_default_graph()``
 - `tools` mirrors registered MCP tool roster
 - `formulas` mirrors formula registry
 """
@@ -17,19 +17,19 @@ from __future__ import annotations
 import pytest
 
 from ucon.graph import get_default_graph
-from ucon.system import UnitSystem
+from ucon.system import UnitSystem, active_system
 from ucon.tools.mcp.formulas import list_formulas
 from ucon.tools.mcp.system import ProcessBase
 
 
 def test_process_base_is_frozen():
-    pb = ProcessBase(unit_system=UnitSystem.from_globals())
+    pb = ProcessBase(unit_system=active_system())
     with pytest.raises(Exception):  # FrozenInstanceError subclass of AttributeError
         pb.tools = frozenset({"x"})  # type: ignore[misc]
 
 
 def test_process_base_equality():
-    sys = UnitSystem.from_globals()
+    sys = active_system()
     a = ProcessBase(unit_system=sys, tools=frozenset({"convert"}), formulas=frozenset({"bmi"}))
     b = ProcessBase(unit_system=sys, tools=frozenset({"convert"}), formulas=frozenset({"bmi"}))
     assert a == b
@@ -71,13 +71,13 @@ def test_from_globals_formulas_match_registry():
 
 def test_from_globals_unit_system_default_is_default_graph():
     pb = ProcessBase.from_globals()
-    # `UnitSystem.from_globals()` snapshots `get_default_graph()` as
-    # its `conversions` field by reference.
-    assert pb.unit_system.conversions is get_default_graph()
+    # `active_system()` snapshots `get_default_graph()` as
+    # its `conversion_graph` field by reference.
+    assert pb.unit_system.conversion_graph is get_default_graph()
 
 
 def test_from_globals_accepts_overrides():
-    sys = UnitSystem.from_globals()
+    sys = active_system()
     pb = ProcessBase.from_globals(
         unit_system=sys,
         tools=frozenset({"only-this"}),
@@ -91,5 +91,5 @@ def test_from_globals_accepts_overrides():
 
 
 def test_catalog_field_optional_default_none():
-    pb = ProcessBase(unit_system=UnitSystem.from_globals())
+    pb = ProcessBase(unit_system=active_system())
     assert pb.catalog is None
