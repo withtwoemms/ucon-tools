@@ -20,10 +20,9 @@ from ucon import Dimension, get_default_graph
 from ucon.dimension import all_dimensions
 from ucon.core import Number, Scale, Unit, UnitProduct
 from ucon import parse_unit, parse_dimension
-from ucon.basis.graph import get_basis_graph
 from ucon.basis.transforms import BasisTransform
 from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_conversion_graph
-from ucon.system import UnitSystem, use as use_system
+from ucon.system import UnitSystem, use as use_system, active_system
 from ucon.maps import LinearMap
 from ucon.tools.mcp.formulas import list_formulas as _list_formulas, get_formula
 from ucon.tools.mcp.koq import (
@@ -3780,8 +3779,14 @@ def extend_basis(
     # that ``unify`` also accepts the symmetric direction; the projection
     # will raise ``LossyProjection`` if a non-zero added component is
     # asked to drop, which is the correct unification behavior.
+    #
+    # ucon v2.0.0a3 retired the ``get_basis_graph()`` context global; the
+    # basis graph is now reached through the active ``UnitSystem``. During
+    # dispatch the tool body runs inside ``use_system(eff.unit_system)``,
+    # so ``active_system().basis_graph`` is the same process-wide graph the
+    # conversion/unify path consults later in ``compute`` / ``convert``.
     if new_components:
-        graph = get_basis_graph()
+        graph = active_system().basis_graph
         forward = BasisTransform.append_components_embedding(
             parent_basis, runtime_basis,
         )

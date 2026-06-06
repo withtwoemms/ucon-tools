@@ -7,15 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Compatibility work spanning ucon v2.0.0a1 and v2.0.0a2.
+Compatibility work spanning ucon v2.0.0a1 through v2.0.0a3.
 
-ucon v2.0.0a2 completed the deprecation cleanup started in v2.0.0a1:
-`UnitSystem.from_globals()` was removed (replaced by `active_system()`),
-and the `UnitSystem.conversions` deprecated alias was dropped (the field
-is now exclusively `conversion_graph`). The changes below adapt the MCP
-server and its test suite to these removals; no change to the ucon-tools
-public API (tool signatures, response shapes, and bundle semantics are
-unchanged).
+ucon v2.0.0a3 retired the `get_basis_graph()` context global from
+`ucon.basis.graph`; the basis graph is now reachable only through the
+active `UnitSystem` (`active_system().basis_graph`). The earlier a1/a2
+wave removed `UnitSystem.from_globals()`, the `.conversions` alias, and
+the `ucon._loader` module. The changes below adapt the MCP server and
+its test suite to these removals; no change to the ucon-tools public API
+(tool signatures, response shapes, and bundle semantics are unchanged).
 
 ### Fixed
 
