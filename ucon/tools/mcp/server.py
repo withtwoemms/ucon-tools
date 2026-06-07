@@ -243,21 +243,12 @@ def dispatched(
     Pulls the per-request `Dispatcher` and `SessionState` from `ctx`,
     wraps the session as a `SessionStateOverlay`, calls
     `Dispatcher.prepare(tool_name, session_overlay=overlay)`, and enters
-    two nested ucon contexts:
-
-    1. ``with use(eff.unit_system):`` — activates the v1.8
-       :class:`~ucon.system.UnitSystem` so reach-through paths
-       (basis graph, constants, ``active()`` consumers, the algebra
-       cache) see the resolved system.
-    2. ``with using_conversion_graph(eff.unit_system.conversion_graph):``
-       — pins the conversion-graph ContextVar so ``get_default_graph``
-       and parsing-graph callers see the dispatcher-resolved graph.
-
-    Both windows are needed: ``use(...)`` alone is not consulted by
-    ``ucon.graph.get_default_graph`` (which checks only the
-    conversion-graph ContextVar / module default), and
-    ``using_conversion_graph(...)`` alone bypasses the v1.8
-    ``UnitSystem`` activation.
+    the ``use(eff.unit_system)`` context — which, as of ucon 2.0,
+    activates the resolved :class:`~ucon.system.UnitSystem` and pins
+    all three ContextVars (``_active``, ``_graph_context``,
+    ``_parsing_graph``) so that reach-through paths (basis graph,
+    constants, ``active()`` consumers, ``get_default_graph``, name
+    resolution) see the dispatcher-resolved system.
 
     Yields the `EffectiveCapabilities` so the tool body can read
     ``eff.audit`` (and ``eff.unit_system`` / ``eff.unit_system.conversion_graph``).
@@ -272,9 +263,7 @@ def dispatched(
     session = _get_session(ctx)
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
-    with use_system(eff.unit_system), using_conversion_graph(
-        eff.unit_system.conversion_graph
-    ):
+    with use_system(eff.unit_system):
         yield eff
 
 
