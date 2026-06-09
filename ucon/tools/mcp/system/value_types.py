@@ -109,7 +109,8 @@ class EffectiveCapabilities:
 
     unit_system: "UnitSystem"
     tools: frozenset[str] = field(default_factory=frozenset)
-    formulas: frozenset[str] = field(default_factory=frozenset)
+    formula_tools: frozenset[str] = field(default_factory=frozenset)
+    kind_formulas: tuple[str, ...] = ()
     audit: tuple[Any, ...] = ()
 
 

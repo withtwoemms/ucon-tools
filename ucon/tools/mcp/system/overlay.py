@@ -106,20 +106,22 @@ def _reject_bundle_unit_system_content(
 
 def _compose_metadata(
     active_bundles: Sequence[CapabilityBundle],
-) -> tuple[frozenset[str], frozenset[str], tuple[tuple[str, str], ...]]:
-    """Compute `(tools, formulas, audit)` contributions from bundles.
+) -> tuple[frozenset[str], frozenset[str], tuple[str, ...], tuple[tuple[str, str], ...]]:
+    """Compute `(tools, formula_tools, kind_formulas, audit)` from bundles.
 
     Audit is ordered to mirror activation order in the caller-supplied
     sequence.
     """
     tools: frozenset[str] = frozenset()
-    formulas: frozenset[str] = frozenset()
+    formula_tools: frozenset[str] = frozenset()
+    kind_formulas: list[str] = []
     audit: list[tuple[str, str]] = []
     for b in active_bundles:
         tools = tools | b.tools
-        formulas = formulas | b.formulas
+        formula_tools = formula_tools | b.formula_tools
+        kind_formulas.extend(b.kind_formulas)
         audit.append((b.name, b.version))
-    return tools, formulas, tuple(audit)
+    return tools, formula_tools, tuple(kind_formulas), tuple(audit)
 
 
 @dataclass(frozen=True)
@@ -127,9 +129,10 @@ class SessionOverlayPolicy:
     """STANDARD-tier policy: per-session mutable overlay rooted on the
     process base.
 
-    Bundles contribute to `tools`, `formulas`, and `audit`. If a
-    `session_overlay` is supplied, its `get_unit_system()` provides the
-    effective unit system; otherwise the process base is used directly.
+    Bundles contribute to `tools`, `formula_tools`, `kind_formulas`,
+    and `audit`. If a `session_overlay` is supplied, its
+    `get_unit_system()` provides the effective unit system; otherwise
+    the process base is used directly.
     """
 
     def resolve(
@@ -142,7 +145,9 @@ class SessionOverlayPolicy:
         session_overlay: SessionOverlay | None,
     ) -> EffectiveCapabilities:
         _reject_bundle_unit_system_content(active_bundles)
-        bundle_tools, bundle_formulas, audit = _compose_metadata(active_bundles)
+        bundle_tools, bundle_formula_tools, bundle_kind_formulas, audit = (
+            _compose_metadata(active_bundles)
+        )
         unit_system = (
             session_overlay.get_unit_system()
             if session_overlay is not None
@@ -151,7 +156,8 @@ class SessionOverlayPolicy:
         return EffectiveCapabilities(
             unit_system=unit_system,
             tools=base_tools | bundle_tools,
-            formulas=base_formulas | bundle_formulas,
+            formula_tools=base_formulas | bundle_formula_tools,
+            kind_formulas=bundle_kind_formulas,
             audit=audit,
         )
 
@@ -160,9 +166,10 @@ class SessionOverlayPolicy:
 class OperatorOverlayPolicy:
     """PREVIEW-tier policy: session-level mutation rejected.
 
-    Bundles contribute to `tools`, `formulas`, and `audit`. The base
-    unit system is used as-is. A non-empty `session_overlay` raises
-    `SessionMutationRejected`; `None` and empty overlays are accepted.
+    Bundles contribute to `tools`, `formula_tools`, `kind_formulas`,
+    and `audit`. The base unit system is used as-is. A non-empty
+    `session_overlay` raises `SessionMutationRejected`; `None` and
+    empty overlays are accepted.
     """
 
     def resolve(
@@ -180,11 +187,14 @@ class OperatorOverlayPolicy:
                 "tier; mutating tools should already be gated upstream"
             )
         _reject_bundle_unit_system_content(active_bundles)
-        bundle_tools, bundle_formulas, audit = _compose_metadata(active_bundles)
+        bundle_tools, bundle_formula_tools, bundle_kind_formulas, audit = (
+            _compose_metadata(active_bundles)
+        )
         return EffectiveCapabilities(
             unit_system=base,
             tools=base_tools | bundle_tools,
-            formulas=base_formulas | bundle_formulas,
+            formula_tools=base_formulas | bundle_formula_tools,
+            kind_formulas=bundle_kind_formulas,
             audit=audit,
         )
 

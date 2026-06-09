@@ -186,7 +186,7 @@ class Dispatcher:
         eff = policy.resolve(
             base=self.process_base.unit_system,
             base_tools=self.process_base.tools,
-            base_formulas=self.process_base.formulas,
+            base_formulas=self.process_base.formula_tools,
             active_bundles=active_bundles,
             session_overlay=effective_overlay,
         )

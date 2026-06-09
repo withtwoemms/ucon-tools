@@ -88,7 +88,7 @@ def _bundle(
     name: str = "extras",
     version: str = "1.0",
     tools: frozenset[str] = frozenset(),
-    formulas: frozenset[str] = frozenset(),
+    formula_tools: frozenset[str] = frozenset(),
     provenance: str = "test",
 ) -> CapabilityBundle:
     return CapabilityBundle(
@@ -96,7 +96,7 @@ def _bundle(
         version=version,
         provenance=provenance,
         tools=tools,
-        formulas=formulas,
+        formula_tools=formula_tools,
     )
 
 
@@ -128,7 +128,7 @@ def test_prepare_returns_effective_capabilities_for_base_tool():
     base = ProcessBase(
         unit_system=base_system,
         tools=frozenset({"convert"}),
-        formulas=frozenset({"bmi"}),
+        formula_tools=frozenset({"bmi"}),
         catalog=None,
     )
     dispatcher = _make_dispatcher(process_base=base)
@@ -137,7 +137,7 @@ def test_prepare_returns_effective_capabilities_for_base_tool():
 
     assert eff.unit_system is base_system
     assert eff.tools == frozenset({"convert"})
-    assert eff.formulas == frozenset({"bmi"})
+    assert eff.formula_tools == frozenset({"bmi"})
     assert eff.audit == ()
 
 
@@ -336,7 +336,7 @@ def test_preview_tier_drops_caller_session_overlay():
     base = ProcessBase(
         unit_system=process_system,
         tools=frozenset({"convert"}),
-        formulas=frozenset(),
+        formula_tools=frozenset(),
         catalog=None,
     )
     dispatcher = _make_dispatcher(
