@@ -263,7 +263,7 @@ def dispatched(
     session = _get_session(ctx)
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
-    with use_system(eff.unit_system):
+    with use_system(eff.unit_system, strict=eff.strict):
         yield eff
 
 

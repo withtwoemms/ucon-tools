@@ -112,6 +112,7 @@ class EffectiveCapabilities:
     formula_tools: frozenset[str] = field(default_factory=frozenset)
     kind_formulas: tuple[str, ...] = ()
     audit: tuple[Any, ...] = ()
+    strict: bool = True
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,9 @@ class TierConfig:
     `eligible_bundles=None` is the wildcard: every catalog entry is
     eligible. `default_lease=None` / `max_lease=None` mean indefinite
     leases (no clamping). `overlay_policy` is the key into a
-    policy-lookup table populated by the policy module.
+    policy-lookup table populated by the policy module. `strict`
+    controls source-unit resolution mode for the tier's ``use()``
+    context.
     """
 
     name: str
@@ -130,6 +133,7 @@ class TierConfig:
     max_lease: timedelta | None
     overlay_policy: str
     mutation_allowed: bool
+    strict: bool = True
 
 
 PREVIEW = TierConfig(
@@ -139,6 +143,7 @@ PREVIEW = TierConfig(
     max_lease=timedelta(days=7),
     overlay_policy="operator",
     mutation_allowed=False,
+    strict=True,
 )
 
 
@@ -149,6 +154,7 @@ STANDARD = TierConfig(
     max_lease=None,
     overlay_policy="session",
     mutation_allowed=True,
+    strict=False,
 )
 
 
