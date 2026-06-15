@@ -65,7 +65,7 @@ def _make_dispatcher(
         process_base=process_base or ProcessBase(
             unit_system=active_system(),
             tools=frozenset({"convert"}),
-            formulas=frozenset({"bmi"}),
+            formula_tools=frozenset({"bmi"}),
             catalog=None,
         ),
         operator_state=operator_state or OperatorState(),
@@ -388,7 +388,7 @@ def test_unknown_overlay_policy_raises_key_error():
         process_base=ProcessBase(
             unit_system=active_system(),
             tools=frozenset({"convert"}),
-            formulas=frozenset(),
+            formula_tools=frozenset(),
             catalog=None,
         ),
         operator_state=OperatorState(),

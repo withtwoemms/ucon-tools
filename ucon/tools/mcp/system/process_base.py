@@ -60,7 +60,7 @@ class ProcessBase:
         *,
         unit_system: "UnitSystem | None" = None,
         tools: frozenset[str] | None = None,
-        formulas: frozenset[str] | None = None,
+        formula_tools: frozenset[str] | None = None,
         catalog: Any = None,
     ) -> "ProcessBase":
         """Build a `ProcessBase` from the active unit system.
@@ -82,14 +82,14 @@ class ProcessBase:
             unit_system = active_system()
         if tools is None:
             tools = _discover_registered_tools()
-        if formulas is None:
-            formulas = _discover_registered_formulas()
+        if formula_tools is None:
+            formula_tools = _discover_registered_formulas()
         if catalog is None:
             catalog = DEFAULT_CATALOG
         return cls(
             unit_system=unit_system,
             tools=tools,
-            formula_tools=formulas,
+            formula_tools=formula_tools,
             catalog=catalog,
         )
 

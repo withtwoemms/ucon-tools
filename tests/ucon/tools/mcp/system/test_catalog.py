@@ -8,7 +8,7 @@ Invariants under test:
 - `DEFAULT_CATALOG.get("core", "1.0")` returns `CORE_BUNDLE`.
 - `DEFAULT_CATALOG.get("absent", "1.0")` raises `BundleNotFound`.
 - `DEFAULT_CATALOG.get("core", "9.9")` raises `BundleVersionNotFound`.
-- Every name in `CORE_BUNDLE.formulas` exists in the formula registry.
+- Every name in `CORE_BUNDLE.formula_tools` exists in the formula registry.
 - None of `define_unit`, `define_conversion`, `define_constant`,
   `define_quantity_kind`, `extend_basis`, `reset_session` appear in
   `CORE_BUNDLE.tools`.
@@ -102,9 +102,9 @@ def test_core_bundle_metadata():
 
 
 def test_core_bundle_formulas_match_registry():
-    """Every name in CORE_BUNDLE.formulas must exist in the formula registry."""
+    """Every name in CORE_BUNDLE.formula_tools must exist in the formula registry."""
     registry_names = {info.name for info in list_formulas()}
-    for fname in CORE_BUNDLE.formulas:
+    for fname in CORE_BUNDLE.formula_tools:
         assert fname in registry_names, (
             f"CORE_BUNDLE advertises formula {fname!r} not in the registry"
         )

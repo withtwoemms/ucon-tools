@@ -10,7 +10,7 @@ Acceptance:
 - `unit_system` is a v1.8 :class:`~ucon.system.UnitSystem` whose
   ``conversion_graph`` field defaults to ``get_default_graph()``
 - `tools` mirrors registered MCP tool roster
-- `formulas` mirrors formula registry
+- `formula_tools` mirrors formula registry
 """
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ def test_process_base_is_frozen():
 
 def test_process_base_equality():
     sys = active_system()
-    a = ProcessBase(unit_system=sys, tools=frozenset({"convert"}), formulas=frozenset({"bmi"}))
-    b = ProcessBase(unit_system=sys, tools=frozenset({"convert"}), formulas=frozenset({"bmi"}))
+    a = ProcessBase(unit_system=sys, tools=frozenset({"convert"}), formula_tools=frozenset({"bmi"}))
+    b = ProcessBase(unit_system=sys, tools=frozenset({"convert"}), formula_tools=frozenset({"bmi"}))
     assert a == b
     # Hashability is not required: `UnitSystem` holds mutable
     # registries and is not hashable in a deep sense; that property
@@ -43,12 +43,12 @@ def test_from_globals_populates_fields():
     pb = ProcessBase.from_globals()
     assert isinstance(pb.unit_system, UnitSystem)
     assert isinstance(pb.tools, frozenset)
-    assert isinstance(pb.formulas, frozenset)
+    assert isinstance(pb.formula_tools, frozenset)
     # At least one tool and one formula must be registered after server import.
     import ucon.tools.mcp.server  # noqa: F401  – populates mcp tool registry
     pb = ProcessBase.from_globals()
     assert len(pb.tools) > 0
-    assert len(pb.formulas) > 0
+    assert len(pb.formula_tools) > 0
 
 
 def test_from_globals_tools_match_fastmcp_registry():
@@ -66,7 +66,7 @@ def test_from_globals_tools_match_fastmcp_registry():
 def test_from_globals_formulas_match_registry():
     pb = ProcessBase.from_globals()
     expected = frozenset(info.name for info in list_formulas())
-    assert pb.formulas == expected
+    assert pb.formula_tools == expected
 
 
 def test_from_globals_unit_system_default_is_default_graph():
@@ -81,12 +81,12 @@ def test_from_globals_accepts_overrides():
     pb = ProcessBase.from_globals(
         unit_system=sys,
         tools=frozenset({"only-this"}),
-        formulas=frozenset({"only-formula"}),
+        formula_tools=frozenset({"only-formula"}),
         catalog="sentinel",
     )
     assert pb.unit_system is sys
     assert pb.tools == frozenset({"only-this"})
-    assert pb.formulas == frozenset({"only-formula"})
+    assert pb.formula_tools == frozenset({"only-formula"})
     assert pb.catalog == "sentinel"
 
 
