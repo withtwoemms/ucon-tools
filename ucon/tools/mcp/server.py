@@ -263,7 +263,7 @@ def dispatched(
     session = _get_session(ctx)
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
-    with use_system(eff.unit_system, strict=eff.strict):
+    with use_system(eff.unit_system, kinds=session.get_kind_lattice(), strict=eff.strict):
         yield eff
 
 
@@ -3227,6 +3227,40 @@ def _parse_dimension_to_vector(
     return None
 
 
+def _parse_dimension_object(
+    dimension_str: str,
+    session: SessionState | None = None,
+) -> "Dimension | None":
+    """Parse a dimension string to a Dimension object.
+
+    Same resolution logic as ``_parse_dimension_to_vector`` but returns
+    the ucon ``Dimension`` value rather than a rendered vector string.
+    Used by ``define_quantity_kind`` to construct ``Kind`` objects for
+    the session's ``KindLattice``.
+    """
+    stripped = dimension_str.strip()
+
+    if stripped == "" or stripped.lower() == "dimensionless":
+        stripped = "1"
+
+    # Try the SI default first; if extended-basis symbols are used,
+    # retry against each registered runtime basis.
+    bases_to_try: list = [None]
+    if session is not None:
+        for basis_info in session.get_extended_bases().values():
+            rb = getattr(basis_info, "runtime_basis", None)
+            if rb is not None:
+                bases_to_try.append(rb)
+
+    for basis in bases_to_try:
+        try:
+            return parse_dimension(stripped, basis=basis)
+        except (ValueError, KeyError):
+            continue
+
+    return None
+
+
 @mcp.tool()
 @_dispatched_tool("define_quantity_kind")
 def define_quantity_kind(
@@ -3307,8 +3341,8 @@ def define_quantity_kind(
             ],
         )
 
-    # Create and register the kind
-    kind = QuantityKindInfo(
+    # Create and register the QuantityKindInfo (MCP wire format).
+    kind_info = QuantityKindInfo(
         name=name,
         dimension_name=dimension,
         dimension_vector=vector_signature,
@@ -3317,7 +3351,20 @@ def define_quantity_kind(
         category=category,
         disambiguation_hints=tuple(disambiguation_hints),
     )
-    session.register_quantity_kind(kind)
+    session.register_quantity_kind(kind_info)
+
+    # Also register a real Kind on the session's KindLattice so that
+    # ucon's ActiveContext.kinds sees it during the `use()` window.
+    dim_obj = _parse_dimension_object(dimension, session=session)
+    if dim_obj is not None:
+        from ucon.kinds import Kind
+        lattice_kind = Kind(
+            name=name,
+            dimension=dim_obj,
+            aliases=tuple(aliases),
+        )
+        lattice = session.get_kind_lattice()
+        lattice.register(lattice_kind)
 
     return QuantityKindDefinitionResult(
         success=True,
