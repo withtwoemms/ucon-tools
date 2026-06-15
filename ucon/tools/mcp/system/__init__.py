@@ -48,6 +48,7 @@ from ucon.tools.mcp.system.overlay import (
     SessionStateOverlay,
 )
 from ucon.tools.mcp.system.process_base import ProcessBase
+from ucon.tools.mcp.system.resolver import PackageResolver
 from ucon.tools.mcp.system.startup import (
     ENV_PROFILE,
     ENV_SYSTEM,
@@ -87,6 +88,7 @@ __all__ = [
     "FixedClock",
     "OperatorOverlayPolicy",
     "OperatorState",
+    "PackageResolver",
     "OverlayPolicy",
     "PREVIEW",
     "ProcessBase",

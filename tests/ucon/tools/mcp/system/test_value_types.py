@@ -39,7 +39,7 @@ def test_capability_bundle_minimal_construction():
     assert b.unit_packages == ()
     assert b.constants == {}
     assert b.tools == frozenset()
-    assert b.formulas == frozenset()
+    assert b.formula_tools == frozenset()
     assert b.expires_at is None
     assert b.restrictions == ()
 
@@ -62,8 +62,8 @@ def test_capability_bundle_tools_are_frozenset():
 
 
 def test_capability_bundle_formulas_are_frozenset():
-    b = CapabilityBundle(name="x", version="1", formulas=frozenset({"bmi"}))
-    assert isinstance(b.formulas, frozenset)
+    b = CapabilityBundle(name="x", version="1", formula_tools=frozenset({"bmi"}))
+    assert isinstance(b.formula_tools, frozenset)
 
 
 def test_capability_bundle_restrictions_default_empty_tuple():
@@ -132,12 +132,12 @@ def test_effective_capabilities_construction():
     eff = EffectiveCapabilities(
         unit_system=sys,
         tools=frozenset({"convert"}),
-        formulas=frozenset({"bmi"}),
+        formula_tools=frozenset({"bmi"}),
         audit=(("core", "1.0"),),
     )
     assert eff.unit_system is sys
     assert eff.tools == frozenset({"convert"})
-    assert eff.formulas == frozenset({"bmi"})
+    assert eff.formula_tools == frozenset({"bmi"})
     assert eff.audit == (("core", "1.0"),)
 
 
@@ -152,7 +152,7 @@ def test_effective_capabilities_defaults():
     sys = active_system()
     eff = EffectiveCapabilities(unit_system=sys)
     assert eff.tools == frozenset()
-    assert eff.formulas == frozenset()
+    assert eff.formula_tools == frozenset()
     assert eff.audit == ()
 
 

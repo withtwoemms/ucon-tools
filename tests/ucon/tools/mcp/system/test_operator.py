@@ -61,7 +61,7 @@ def _core() -> CapabilityBundle:
         version="1.0",
         provenance="test:core",
         tools=frozenset({"convert"}),
-        formulas=frozenset({"bmi"}),
+        formula_tools=frozenset({"bmi"}),
     )
 
 

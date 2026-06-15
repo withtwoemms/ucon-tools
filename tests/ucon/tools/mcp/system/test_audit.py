@@ -169,7 +169,7 @@ def test_audit_sink_distinct_from_eff_audit():
     eff = EffectiveCapabilities(
         unit_system=object(),
         tools=frozenset(),
-        formulas=frozenset(),
+        formula_tools=frozenset(),
         audit=("core@1.0",),
     )
     # Different shapes.

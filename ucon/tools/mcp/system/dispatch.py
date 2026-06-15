@@ -27,7 +27,7 @@ headers) is intentionally out of scope here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from ucon.tools.mcp.system.audit import AuditRecord, AuditSink
@@ -186,10 +186,11 @@ class Dispatcher:
         eff = policy.resolve(
             base=self.process_base.unit_system,
             base_tools=self.process_base.tools,
-            base_formulas=self.process_base.formulas,
+            base_formulas=self.process_base.formula_tools,
             active_bundles=active_bundles,
             session_overlay=effective_overlay,
         )
+        eff = replace(eff, strict=tier_config.strict)
 
         if tool_name not in eff.tools:
             raise CapabilityNotAvailable(tool_name, eff.audit)

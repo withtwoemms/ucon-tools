@@ -92,13 +92,14 @@ _CORE_TOOLS: frozenset[str] = frozenset({
     "list_extended_bases",
     "list_formulas",
     "call_formula",
+    "restrict_system",
 })
 
 
-# CORE_BUNDLE.formulas is a curated subset of universally applicable
-# formulas. Domain-specific formula sets (aerospace, chemistry, medical,
-# etc.) are reserved for separate bundles.
-_CORE_FORMULAS: frozenset[str] = frozenset({"bmi", "fib4"})
+# CORE_BUNDLE.formula_tools is a curated subset of universally applicable
+# formulas accessible via call_formula. Domain-specific formula sets
+# (aerospace, chemistry, medical, etc.) are reserved for separate bundles.
+_CORE_FORMULA_TOOLS: frozenset[str] = frozenset({"bmi", "fib4"})
 
 
 CORE_BUNDLE: CapabilityBundle = CapabilityBundle(
@@ -108,9 +109,32 @@ CORE_BUNDLE: CapabilityBundle = CapabilityBundle(
     unit_packages=(),
     constants={},
     tools=_CORE_TOOLS,
-    formulas=_CORE_FORMULAS,
+    formula_tools=_CORE_FORMULA_TOOLS,
+    kind_formulas=(),
     expires_at=None,
 )
 
 
-DEFAULT_CATALOG: BundleCatalog = StaticCatalog({(CORE_BUNDLE.name, CORE_BUNDLE.version): CORE_BUNDLE})
+_PRO_TOOLS: frozenset[str] = frozenset({
+    "diff_systems",
+    "check_compatibility",
+})
+
+
+PRO_BUNDLE: CapabilityBundle = CapabilityBundle(
+    name="pro",
+    version="1.0",
+    provenance="ucon-tools built-in",
+    unit_packages=(),
+    constants={},
+    tools=_PRO_TOOLS,
+    formula_tools=frozenset(),
+    kind_formulas=(),
+    expires_at=None,
+)
+
+
+DEFAULT_CATALOG: BundleCatalog = StaticCatalog({
+    (CORE_BUNDLE.name, CORE_BUNDLE.version): CORE_BUNDLE,
+    (PRO_BUNDLE.name, PRO_BUNDLE.version): PRO_BUNDLE,
+})

@@ -38,6 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
 
+from ucon.tools.mcp.system.resolver import PackageResolver
 from ucon.tools.mcp.system.value_types import (
     CapabilityBundle,
     EffectiveCapabilities,
@@ -85,41 +86,60 @@ class OverlayPolicy(Protocol):
     ) -> EffectiveCapabilities: ...
 
 
-def _reject_bundle_unit_system_content(
+def _compose_bundle_system(
+    base: "UnitSystem",
     active_bundles: Sequence[CapabilityBundle],
-) -> None:
-    """Bundles must not carry unit-system content.
+    resolver: PackageResolver | None,
+) -> "UnitSystem":
+    """Compose bundle-contributed unit packages into the base system.
 
-    `unit_packages` and `constants` composition into a `UnitSystem`
-    requires `SystemDelta` / `UnitPackage` machinery that is not yet
-    implemented. `CORE_BUNDLE` satisfies this; any other bundle
-    declaring content fails loudly at resolve time.
+    If no bundles carry `unit_packages` or `constants`, the base is
+    returned as-is. When packages are present but no resolver is
+    configured, raises `NotImplementedError` (preserving v0.5.x
+    behaviour). Constants composition is anticipated but not yet
+    implemented; any bundle declaring constants fails loudly.
+
+    With a resolver, each package is loaded and composed via
+    ``base.extend_many(*fragments)``.
     """
+    fragments: list["UnitSystem"] = []
     for b in active_bundles:
-        if b.unit_packages or b.constants:
+        if b.constants:
             raise NotImplementedError(
-                f"bundle {b.name!r}@{b.version!r} carries unit-system "
-                "content (unit_packages or constants); composition into "
-                "the base unit system is not yet implemented"
+                f"bundle {b.name!r}@{b.version!r} carries constants; "
+                "composition into the base unit system is not yet implemented"
             )
+        if b.unit_packages:
+            if resolver is None:
+                raise NotImplementedError(
+                    f"bundle {b.name!r}@{b.version!r} carries unit_packages "
+                    "but no PackageResolver is configured"
+                )
+            for pkg_id in b.unit_packages:
+                fragments.append(resolver.load(pkg_id))
+    if not fragments:
+        return base
+    return base.extend_many(*fragments)
 
 
 def _compose_metadata(
     active_bundles: Sequence[CapabilityBundle],
-) -> tuple[frozenset[str], frozenset[str], tuple[tuple[str, str], ...]]:
-    """Compute `(tools, formulas, audit)` contributions from bundles.
+) -> tuple[frozenset[str], frozenset[str], tuple[str, ...], tuple[tuple[str, str], ...]]:
+    """Compute `(tools, formula_tools, kind_formulas, audit)` from bundles.
 
     Audit is ordered to mirror activation order in the caller-supplied
     sequence.
     """
     tools: frozenset[str] = frozenset()
-    formulas: frozenset[str] = frozenset()
+    formula_tools: frozenset[str] = frozenset()
+    kind_formulas: list[str] = []
     audit: list[tuple[str, str]] = []
     for b in active_bundles:
         tools = tools | b.tools
-        formulas = formulas | b.formulas
+        formula_tools = formula_tools | b.formula_tools
+        kind_formulas.extend(b.kind_formulas)
         audit.append((b.name, b.version))
-    return tools, formulas, tuple(audit)
+    return tools, formula_tools, tuple(kind_formulas), tuple(audit)
 
 
 @dataclass(frozen=True)
@@ -127,10 +147,13 @@ class SessionOverlayPolicy:
     """STANDARD-tier policy: per-session mutable overlay rooted on the
     process base.
 
-    Bundles contribute to `tools`, `formulas`, and `audit`. If a
-    `session_overlay` is supplied, its `get_unit_system()` provides the
-    effective unit system; otherwise the process base is used directly.
+    Bundles contribute to `tools`, `formula_tools`, `kind_formulas`,
+    and `audit`. If a `session_overlay` is supplied, its
+    `get_unit_system()` provides the effective unit system; otherwise
+    the process base (composed with bundle packages) is used directly.
     """
+
+    resolver: PackageResolver | None = None
 
     def resolve(
         self,
@@ -141,17 +164,20 @@ class SessionOverlayPolicy:
         active_bundles: Sequence[CapabilityBundle],
         session_overlay: SessionOverlay | None,
     ) -> EffectiveCapabilities:
-        _reject_bundle_unit_system_content(active_bundles)
-        bundle_tools, bundle_formulas, audit = _compose_metadata(active_bundles)
+        composed = _compose_bundle_system(base, active_bundles, self.resolver)
+        bundle_tools, bundle_formula_tools, bundle_kind_formulas, audit = (
+            _compose_metadata(active_bundles)
+        )
         unit_system = (
             session_overlay.get_unit_system()
             if session_overlay is not None
-            else base
+            else composed
         )
         return EffectiveCapabilities(
             unit_system=unit_system,
             tools=base_tools | bundle_tools,
-            formulas=base_formulas | bundle_formulas,
+            formula_tools=base_formulas | bundle_formula_tools,
+            kind_formulas=bundle_kind_formulas,
             audit=audit,
         )
 
@@ -160,10 +186,13 @@ class SessionOverlayPolicy:
 class OperatorOverlayPolicy:
     """PREVIEW-tier policy: session-level mutation rejected.
 
-    Bundles contribute to `tools`, `formulas`, and `audit`. The base
-    unit system is used as-is. A non-empty `session_overlay` raises
+    Bundles contribute to `tools`, `formula_tools`, `kind_formulas`,
+    and `audit`. The base unit system (composed with bundle packages)
+    is used as-is. A non-empty `session_overlay` raises
     `SessionMutationRejected`; `None` and empty overlays are accepted.
     """
+
+    resolver: PackageResolver | None = None
 
     def resolve(
         self,
@@ -179,12 +208,15 @@ class OperatorOverlayPolicy:
                 "session-level overlay is not permitted in the PREVIEW "
                 "tier; mutating tools should already be gated upstream"
             )
-        _reject_bundle_unit_system_content(active_bundles)
-        bundle_tools, bundle_formulas, audit = _compose_metadata(active_bundles)
+        composed = _compose_bundle_system(base, active_bundles, self.resolver)
+        bundle_tools, bundle_formula_tools, bundle_kind_formulas, audit = (
+            _compose_metadata(active_bundles)
+        )
         return EffectiveCapabilities(
-            unit_system=base,
+            unit_system=composed,
             tools=base_tools | bundle_tools,
-            formulas=base_formulas | bundle_formulas,
+            formula_tools=base_formulas | bundle_formula_tools,
+            kind_formulas=bundle_kind_formulas,
             audit=audit,
         )
 

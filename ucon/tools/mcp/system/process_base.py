@@ -39,9 +39,10 @@ class ProcessBase:
     tools : frozenset[str]
         Names of MCP tools advertised by this process. Dispatch gates each
         request by `request.tool in effective.tools`.
-    formulas : frozenset[str]
-        Names of registered domain formulas. Mirrors the formula registry
-        at process-startup snapshot time.
+    formula_tools : frozenset[str]
+        Names of registered domain formulas accessible via
+        ``call_formula``. Mirrors the formula registry at
+        process-startup snapshot time.
     catalog : Any
         The `BundleCatalog` (Protocol) of known bundles. Typed as `Any`
         because `BundleCatalog` is a Protocol — any structurally
@@ -50,7 +51,7 @@ class ProcessBase:
 
     unit_system: "UnitSystem"
     tools: frozenset[str] = field(default_factory=frozenset)
-    formulas: frozenset[str] = field(default_factory=frozenset)
+    formula_tools: frozenset[str] = field(default_factory=frozenset)
     catalog: Any = None
 
     @classmethod
@@ -59,7 +60,7 @@ class ProcessBase:
         *,
         unit_system: "UnitSystem | None" = None,
         tools: frozenset[str] | None = None,
-        formulas: frozenset[str] | None = None,
+        formula_tools: frozenset[str] | None = None,
         catalog: Any = None,
     ) -> "ProcessBase":
         """Build a `ProcessBase` from the active unit system.
@@ -70,7 +71,7 @@ class ProcessBase:
           ``UnitSystem`` from the ``ActiveContext`` ContextVar.
         - `tools`: names of every `@mcp.tool()` registered on the
           module-level `FastMCP` instance in `ucon.tools.mcp.server`.
-        - `formulas`: names returned by the formula registry's
+        - `formula_tools`: names returned by the formula registry's
           `list_formulas()`.
         - `catalog`: defaults to `DEFAULT_CATALOG`.
 
@@ -81,14 +82,14 @@ class ProcessBase:
             unit_system = active_system()
         if tools is None:
             tools = _discover_registered_tools()
-        if formulas is None:
-            formulas = _discover_registered_formulas()
+        if formula_tools is None:
+            formula_tools = _discover_registered_formulas()
         if catalog is None:
             catalog = DEFAULT_CATALOG
         return cls(
             unit_system=unit_system,
             tools=tools,
-            formulas=formulas,
+            formula_tools=formula_tools,
             catalog=catalog,
         )
 

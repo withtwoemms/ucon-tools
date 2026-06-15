@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ucon.constants import Constant
     from ucon.dimension import Dimension
     from ucon.graph import ConversionGraph
+    from ucon.kinds import KindLattice
     from ucon.system import UnitSystem
     from ucon.tools.mcp.koq import ComputationDeclaration, ExtendedBasisInfo, QuantityKindInfo
 
@@ -58,6 +59,16 @@ class SessionState(Protocol):
 
     def get_quantity_kinds(self) -> dict[str, "QuantityKindInfo"]:
         """Get the session's custom quantity kinds."""
+        ...
+
+    def get_kind_lattice(self) -> "KindLattice":
+        """Get the session's KindLattice (copy-on-first-access).
+
+        Returns the session's mutable kind lattice, which may contain
+        kinds registered via ``define_quantity_kind``. The lattice is
+        copied from the base on first access to avoid cross-session
+        contamination.
+        """
         ...
 
     def register_quantity_kind(self, kind: "QuantityKindInfo") -> None:
@@ -110,7 +121,11 @@ class DefaultSessionState:
     >>> assert graph is graph2  # Same instance
     """
 
-    def __init__(self, base_graph: "ConversionGraph | None" = None):
+    def __init__(
+        self,
+        base_graph: "ConversionGraph | None" = None,
+        base_lattice: "KindLattice | None" = None,
+    ):
         # Capture the default graph eagerly so subsequent `reset()` calls
         # restore to the same base regardless of any active ambient
         # `using_conversion_graph` context (which `get_default_graph()`
@@ -119,7 +134,12 @@ class DefaultSessionState:
             from ucon.graph import get_default_graph
             base_graph = get_default_graph()
         self._base_graph: "ConversionGraph" = base_graph
+        if base_lattice is None:
+            from ucon.kinds import KindLattice
+            base_lattice = KindLattice()
+        self._base_lattice: "KindLattice" = base_lattice
         self._graph: "ConversionGraph | None" = None
+        self._kind_lattice: "KindLattice | None" = None
         self._constants: dict[str, "Constant"] = {}
         self._quantity_kinds: dict[str, "QuantityKindInfo"] = {}
         self._active_computation: "ComputationDeclaration | None" = None
@@ -182,6 +202,17 @@ class DefaultSessionState:
         """Get the session's custom constants dictionary."""
         return self._constants
 
+    def get_kind_lattice(self) -> "KindLattice":
+        """Get or create the session's KindLattice (copy-on-first-access).
+
+        Returns a copy of the base lattice on first access, then reuses
+        the session lattice for subsequent calls. Prevents cross-session
+        contamination while allowing per-session Kind registration.
+        """
+        if self._kind_lattice is None:
+            self._kind_lattice = self._base_lattice.copy()
+        return self._kind_lattice
+
     def get_quantity_kinds(self) -> dict[str, "QuantityKindInfo"]:
         """Get the session's custom quantity kinds dictionary."""
         return self._quantity_kinds
@@ -234,6 +265,7 @@ class DefaultSessionState:
         Creates a fresh copy of the base graph and clears all session state.
         """
         self._graph = self._base_graph.copy()
+        self._kind_lattice = None
         self._constants = {}
         self._quantity_kinds = {}
         self._active_computation = None

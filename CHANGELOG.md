@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-15
+
 Compatibility work spanning ucon v2.0.0a1 through v2.0.0a3.
 
 ucon v2.0.0a3 retired the `get_basis_graph()` context global from
@@ -59,13 +61,10 @@ its test suite to these removals; no change to the ucon-tools public API
 
 ### Changed
 
-- **Dependency floor bumped to `ucon>=2.0.0a2`** (from `>=2.0.0a1`).
-  v2.0.0a2 ships the Phase 4 canonical identity cleanup and the full
-  deprecation removal wave (`from_globals`, `conversions` alias,
-  `get_unit_by_name`, `_none`, `using_graph`, `convert_to`). The
-  floor will be tightened to `ucon>=2.0.0` once v2.0 ships final.
-  Downstream installations that pin `ucon<2.0` should stay on
-  ucon-tools 0.5.3.
+- **Dependency floor bumped to `ucon>=2.0.1`** (from `>=2.0.0a1`).
+  v2.0.1 fixes the gray/sievert/rad_dose/rem dimension assignment
+  (`energy` → `specific_energy`), enabling kinded `Number` construction
+  for `absorbed_dose` and `dose_equivalent` quantity kinds.
 - **All test files migrated from `UnitSystem.from_globals()` to
   `active_system()`.** Six test modules updated: `test_dispatch.py`,
   `test_overlay.py`, `test_process_base.py`, `test_value_types.py`,
@@ -80,6 +79,47 @@ its test suite to these removals; no change to the ucon-tools public API
 - **`process_base.from_globals` docstring** updated to describe the
   unit system as sourced from `active_system()` rather than
   `UnitSystem.from_globals()`.
+- **`formulas` field renamed to `formula_tools`** on `CapabilityBundle`,
+  `EffectiveCapabilities`, and `ProcessBase`. Clears the `formulas`
+  name for the distinct `kind_formulas` concept. All test call sites
+  updated.
+- **`strict` field added to `TierConfig` and `EffectiveCapabilities`.**
+  Controls source-unit resolution mode (`strict=True` enforces
+  identity-based resolution via `UnitDefinitionMismatch`). The
+  dispatcher stamps `eff.strict` from the tier config, and
+  `dispatched()` passes it into `use_system()`.
+
+### Added
+
+- **`PackageResolver` protocol** (`ucon.tools.mcp.system.resolver`).
+  Single-method interface (`load(package_id) → UnitSystem`) for
+  resolving bundle-declared `unit_packages` into `UnitSystem`
+  fragments. Overlay policies accept an optional resolver and compose
+  bundle packages into the base system via `UnitSystem.extend_many()`.
+  Replaces `_reject_bundle_unit_system_content()` with the more
+  nuanced `_compose_bundle_system()`.
+- **Session-level `KindLattice` management.** `DefaultSessionState`
+  gains `get_kind_lattice()` with copy-on-first-access semantics.
+  The lattice is copied from the base on first access, preventing
+  cross-session contamination. `reset()` clears the session lattice.
+  The `SessionState` protocol adds the method.
+- **`KindLattice` wiring in `define_quantity_kind`.** User-defined
+  quantity kinds now register a real `ucon.kinds.Kind` on the
+  session's `KindLattice`, not just the MCP-level `QuantityKindInfo`
+  wire type. The `dispatched()` context passes `kinds=` into
+  `use_system()` so ucon's `ActiveContext` sees session kinds.
+- **`restrict_system` tool.** Restricts the active system to named
+  units or dimensions and returns a summary. Added to `CORE_BUNDLE`.
+- **`diff_systems` tool.** Compares the session system against the
+  process-base, reporting added/removed/redefined units, dimensions,
+  conversions, and constants.
+- **`check_compatibility` tool.** Tests whether the session system
+  composes with the process-base without conflict.
+- **`PRO_BUNDLE`** in the catalog, carrying `diff_systems` and
+  `check_compatibility`.
+- **`FREE` tier removed.** `PREVIEW` (leased, operator-curated, no
+  mutation) covers the free offering at mcp.ucon.dev. The `FREE`
+  `TierConfig` and its `TIER_CONFIGS` entry have been deleted.
 
 ## [0.5.3] - 2026-05-17
 
@@ -714,6 +754,8 @@ through an explicit capability-resolution step before invocation.
 - Install via `pip install ucon-tools[mcp]`
 
 <!-- Links -->
+[Unreleased]: https://github.com/withtwoemms/ucon-tools/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/withtwoemms/ucon-tools/compare/0.5.3...0.6.0
 [0.5.3]: https://github.com/withtwoemms/ucon-tools/compare/0.5.2...0.5.3
 [0.5.2]: https://github.com/withtwoemms/ucon-tools/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/withtwoemms/ucon-tools/compare/0.5.0...0.5.1

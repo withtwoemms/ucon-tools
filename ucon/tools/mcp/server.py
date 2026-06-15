@@ -243,21 +243,12 @@ def dispatched(
     Pulls the per-request `Dispatcher` and `SessionState` from `ctx`,
     wraps the session as a `SessionStateOverlay`, calls
     `Dispatcher.prepare(tool_name, session_overlay=overlay)`, and enters
-    two nested ucon contexts:
-
-    1. ``with use(eff.unit_system):`` — activates the v1.8
-       :class:`~ucon.system.UnitSystem` so reach-through paths
-       (basis graph, constants, ``active()`` consumers, the algebra
-       cache) see the resolved system.
-    2. ``with using_conversion_graph(eff.unit_system.conversion_graph):``
-       — pins the conversion-graph ContextVar so ``get_default_graph``
-       and parsing-graph callers see the dispatcher-resolved graph.
-
-    Both windows are needed: ``use(...)`` alone is not consulted by
-    ``ucon.graph.get_default_graph`` (which checks only the
-    conversion-graph ContextVar / module default), and
-    ``using_conversion_graph(...)`` alone bypasses the v1.8
-    ``UnitSystem`` activation.
+    the ``use(eff.unit_system)`` context — which, as of ucon 2.0,
+    activates the resolved :class:`~ucon.system.UnitSystem` and pins
+    all three ContextVars (``_active``, ``_graph_context``,
+    ``_parsing_graph``) so that reach-through paths (basis graph,
+    constants, ``active()`` consumers, ``get_default_graph``, name
+    resolution) see the dispatcher-resolved system.
 
     Yields the `EffectiveCapabilities` so the tool body can read
     ``eff.audit`` (and ``eff.unit_system`` / ``eff.unit_system.conversion_graph``).
@@ -272,9 +263,7 @@ def dispatched(
     session = _get_session(ctx)
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
-    with use_system(eff.unit_system), using_conversion_graph(
-        eff.unit_system.conversion_graph
-    ):
+    with use_system(eff.unit_system, kinds=session.get_kind_lattice(), strict=eff.strict):
         yield eff
 
 
@@ -1720,6 +1709,134 @@ def reset_session(ctx: Context | None = None) -> SessionResult:
         success=True,
         message="Session reset. All custom units, conversions, and constants cleared.",
     )
+
+
+# -----------------------------------------------------------------------------
+# Relation Tools
+# -----------------------------------------------------------------------------
+
+
+@mcp.tool()
+@_dispatched_tool("restrict_system")
+def restrict_system(
+    dimensions: list[str] | None = None,
+    units: list[str] | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Restrict active system to named units/dimensions.
+
+    Returns a summary of the restricted system: the surviving dimensions,
+    unit count, and conversion count. Useful for focused analysis of a
+    system's capabilities within a specific domain.
+
+    Args:
+        dimensions: Optional list of dimension names to keep.
+        units: Optional list of unit names to keep.
+
+    Returns:
+        dict with restriction summary.
+    """
+    system = active_system()
+
+    dim_objs = None
+    if dimensions is not None:
+        dim_objs = []
+        for d_name in dimensions:
+            dim = system.dimensions.get(d_name)
+            if dim is None:
+                return {"error": f"Unknown dimension: {d_name!r}"}
+            dim_objs.append(dim)
+
+    restricted = system.restrict(dimensions=dim_objs, units=units)
+    return {
+        "success": True,
+        "dimensions": sorted(restricted.dimensions.keys()),
+        "unit_count": len(restricted.units),
+        "units_sample": sorted(restricted.units.keys())[:20],
+        "message": (
+            f"Restricted to {len(restricted.dimensions)} dimensions, "
+            f"{len(restricted.units)} units."
+        ),
+    }
+
+
+@mcp.tool()
+@_dispatched_tool("diff_systems")
+def diff_systems(
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Compare the session system against the process-base system.
+
+    Shows units, dimensions, and conversions added, removed, or
+    redefined by session-level mutations.
+
+    Returns:
+        dict with diff summary showing added/removed/redefined counts.
+    """
+    session = _get_session(ctx)
+    session_system = session.get_unit_system()
+    base_system = active_system()
+
+    diff = base_system.diff(session_system)
+
+    def _summarize_registry_diff(rd):
+        return {
+            "added": len(rd.added),
+            "removed": len(rd.removed),
+            "redefined": len(rd.redefined),
+        }
+
+    return {
+        "success": True,
+        "units": _summarize_registry_diff(diff.units),
+        "dimensions": _summarize_registry_diff(diff.dimensions),
+        "conversions": {
+            "added": len(diff.conversions.added),
+            "removed": len(diff.conversions.removed),
+        },
+        "constants": _summarize_registry_diff(diff.constants),
+    }
+
+
+@mcp.tool()
+@_dispatched_tool("check_compatibility")
+def check_compatibility(
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Check if the session system composes with the process-base without conflict.
+
+    Returns compatibility status and, when incompatible, a summary of
+    conflicting registrations.
+
+    Returns:
+        dict with compatibility status.
+    """
+    session = _get_session(ctx)
+    session_system = session.get_unit_system()
+    base_system = active_system()
+
+    compatible = base_system.compatible_with(session_system)
+    result: dict = {
+        "compatible": compatible,
+    }
+    if not compatible:
+        diff = base_system.diff(session_system)
+        conflicts: list[str] = []
+        if diff.units.redefined:
+            conflicts.append(
+                f"{len(diff.units.redefined)} redefined units: "
+                f"{', '.join(sorted(diff.units.redefined.keys())[:5])}"
+            )
+        if diff.dimensions.redefined:
+            conflicts.append(
+                f"{len(diff.dimensions.redefined)} redefined dimensions: "
+                f"{', '.join(sorted(diff.dimensions.redefined.keys())[:5])}"
+            )
+        result["conflicts"] = conflicts
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -3238,6 +3355,40 @@ def _parse_dimension_to_vector(
     return None
 
 
+def _parse_dimension_object(
+    dimension_str: str,
+    session: SessionState | None = None,
+) -> "Dimension | None":
+    """Parse a dimension string to a Dimension object.
+
+    Same resolution logic as ``_parse_dimension_to_vector`` but returns
+    the ucon ``Dimension`` value rather than a rendered vector string.
+    Used by ``define_quantity_kind`` to construct ``Kind`` objects for
+    the session's ``KindLattice``.
+    """
+    stripped = dimension_str.strip()
+
+    if stripped == "" or stripped.lower() == "dimensionless":
+        stripped = "1"
+
+    # Try the SI default first; if extended-basis symbols are used,
+    # retry against each registered runtime basis.
+    bases_to_try: list = [None]
+    if session is not None:
+        for basis_info in session.get_extended_bases().values():
+            rb = getattr(basis_info, "runtime_basis", None)
+            if rb is not None:
+                bases_to_try.append(rb)
+
+    for basis in bases_to_try:
+        try:
+            return parse_dimension(stripped, basis=basis)
+        except (ValueError, KeyError):
+            continue
+
+    return None
+
+
 @mcp.tool()
 @_dispatched_tool("define_quantity_kind")
 def define_quantity_kind(
@@ -3318,8 +3469,8 @@ def define_quantity_kind(
             ],
         )
 
-    # Create and register the kind
-    kind = QuantityKindInfo(
+    # Create and register the QuantityKindInfo (MCP wire format).
+    kind_info = QuantityKindInfo(
         name=name,
         dimension_name=dimension,
         dimension_vector=vector_signature,
@@ -3328,7 +3479,20 @@ def define_quantity_kind(
         category=category,
         disambiguation_hints=tuple(disambiguation_hints),
     )
-    session.register_quantity_kind(kind)
+    session.register_quantity_kind(kind_info)
+
+    # Also register a real Kind on the session's KindLattice so that
+    # ucon's ActiveContext.kinds sees it during the `use()` window.
+    dim_obj = _parse_dimension_object(dimension, session=session)
+    if dim_obj is not None:
+        from ucon.kinds import Kind
+        lattice_kind = Kind(
+            name=name,
+            dimension=dim_obj,
+            aliases=tuple(aliases),
+        )
+        lattice = session.get_kind_lattice()
+        lattice.register(lattice_kind)
 
     return QuantityKindDefinitionResult(
         success=True,

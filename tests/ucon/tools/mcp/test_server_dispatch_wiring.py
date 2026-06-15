@@ -237,7 +237,7 @@ def test_convert_raises_capability_not_available_when_tool_gated_off():
         process_base=ProcessBase(
             unit_system=active_system(),
             tools=frozenset(),  # convert is NOT advertised
-            formulas=frozenset(),
+            formula_tools=frozenset(),
             catalog=None,
         ),
         operator_state=OperatorState(),
@@ -292,7 +292,7 @@ def test_convert_uses_dispatcher_resolved_unit_system_under_preview_tier():
         process_base=ProcessBase(
             unit_system=custom_system,
             tools=frozenset({"convert"}),
-            formulas=frozenset(),
+            formula_tools=frozenset(),
             catalog=None,
         ),
         operator_state=OperatorState(),

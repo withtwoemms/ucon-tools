@@ -73,13 +73,13 @@ def _bundle(
     name: str = "core",
     version: str = "1.0",
     tools: frozenset[str] = frozenset(),
-    formulas: frozenset[str] = frozenset(),
+    formula_tools: frozenset[str] = frozenset(),
 ) -> CapabilityBundle:
     return CapabilityBundle(
         name=name,
         version=version,
         tools=tools,
-        formulas=formulas,
+        formula_tools=formula_tools,
     )
 
 
@@ -121,7 +121,7 @@ def test_session_policy_uses_base_when_no_overlay():
     )
     assert eff.unit_system is base
     assert eff.tools == frozenset({"convert"})
-    assert eff.formulas == frozenset({"bmi"})
+    assert eff.formula_tools == frozenset({"bmi"})
     assert eff.audit == ()
 
 
@@ -145,12 +145,12 @@ def test_session_policy_unions_tools_and_formulas_across_bundles():
     b1 = _bundle(
         name="b1",
         tools=frozenset({"t1"}),
-        formulas=frozenset({"f1"}),
+        formula_tools=frozenset({"f1"}),
     )
     b2 = _bundle(
         name="b2",
         tools=frozenset({"t2"}),
-        formulas=frozenset({"f2"}),
+        formula_tools=frozenset({"f2"}),
     )
     eff = policy.resolve(
         base=_system(),
@@ -160,7 +160,7 @@ def test_session_policy_unions_tools_and_formulas_across_bundles():
         session_overlay=None,
     )
     assert eff.tools == frozenset({"convert", "t1", "t2"})
-    assert eff.formulas == frozenset({"bmi", "f1", "f2"})
+    assert eff.formula_tools == frozenset({"bmi", "f1", "f2"})
 
 
 def test_session_policy_audit_preserves_bundle_order():
@@ -239,7 +239,7 @@ def test_operator_policy_rejects_non_empty_session_overlay():
 
 def test_operator_policy_unions_tools_and_formulas_across_bundles():
     policy = OperatorOverlayPolicy()
-    b1 = _bundle(tools=frozenset({"t1"}), formulas=frozenset({"f1"}))
+    b1 = _bundle(tools=frozenset({"t1"}), formula_tools=frozenset({"f1"}))
     eff = policy.resolve(
         base=_system(),
         base_tools=frozenset({"convert"}),
@@ -248,7 +248,7 @@ def test_operator_policy_unions_tools_and_formulas_across_bundles():
         session_overlay=None,
     )
     assert eff.tools == frozenset({"convert", "t1"})
-    assert eff.formulas == frozenset({"bmi", "f1"})
+    assert eff.formula_tools == frozenset({"bmi", "f1"})
 
 
 def test_operator_policy_audit_includes_each_active_bundle():

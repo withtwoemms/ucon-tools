@@ -46,8 +46,14 @@ class CapabilityBundle:
     tools : frozenset[str]
         Tool capabilities this bundle grants. Set semantics: composition
         is union; no implied ordering.
-    formulas : frozenset[str]
-        Formula capabilities this bundle grants.
+    formula_tools : frozenset[str]
+        Formula names accessible via ``call_formula``. Explicit agent
+        invocations gated by the capability framework.
+    kind_formulas : tuple[str, ...]
+        ``KindFormula`` names contributed to arithmetic dispatch.
+        Implicit behavior — multiplying two ``Number`` values may
+        consult these. Distinct from ``formula_tools`` because the
+        security model gates them differently.
     expires_at : datetime | None
         Intrinsic bundle expiry. `None` means no intrinsic expiry; the
         activation lease still bounds the bundle's active lifetime.
@@ -63,7 +69,8 @@ class CapabilityBundle:
     unit_packages: tuple[str, ...] = ()
     constants: Mapping[str, "Constant"] = field(default_factory=dict)
     tools: frozenset[str] = field(default_factory=frozenset)
-    formulas: frozenset[str] = field(default_factory=frozenset)
+    formula_tools: frozenset[str] = field(default_factory=frozenset)
+    kind_formulas: tuple[str, ...] = ()
     expires_at: datetime | None = None
     restrictions: tuple[str, ...] = ()
 
@@ -102,8 +109,10 @@ class EffectiveCapabilities:
 
     unit_system: "UnitSystem"
     tools: frozenset[str] = field(default_factory=frozenset)
-    formulas: frozenset[str] = field(default_factory=frozenset)
+    formula_tools: frozenset[str] = field(default_factory=frozenset)
+    kind_formulas: tuple[str, ...] = ()
     audit: tuple[Any, ...] = ()
+    strict: bool = True
 
 
 @dataclass(frozen=True)
@@ -113,7 +122,9 @@ class TierConfig:
     `eligible_bundles=None` is the wildcard: every catalog entry is
     eligible. `default_lease=None` / `max_lease=None` mean indefinite
     leases (no clamping). `overlay_policy` is the key into a
-    policy-lookup table populated by the policy module.
+    policy-lookup table populated by the policy module. `strict`
+    controls source-unit resolution mode for the tier's ``use()``
+    context.
     """
 
     name: str
@@ -122,6 +133,7 @@ class TierConfig:
     max_lease: timedelta | None
     overlay_policy: str
     mutation_allowed: bool
+    strict: bool = True
 
 
 PREVIEW = TierConfig(
@@ -131,6 +143,7 @@ PREVIEW = TierConfig(
     max_lease=timedelta(days=7),
     overlay_policy="operator",
     mutation_allowed=False,
+    strict=True,
 )
 
 
@@ -141,6 +154,7 @@ STANDARD = TierConfig(
     max_lease=None,
     overlay_policy="session",
     mutation_allowed=True,
+    strict=False,
 )
 
 
