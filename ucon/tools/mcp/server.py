@@ -1712,6 +1712,134 @@ def reset_session(ctx: Context | None = None) -> SessionResult:
 
 
 # -----------------------------------------------------------------------------
+# Relation Tools
+# -----------------------------------------------------------------------------
+
+
+@mcp.tool()
+@_dispatched_tool("restrict_system")
+def restrict_system(
+    dimensions: list[str] | None = None,
+    units: list[str] | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Restrict active system to named units/dimensions.
+
+    Returns a summary of the restricted system: the surviving dimensions,
+    unit count, and conversion count. Useful for focused analysis of a
+    system's capabilities within a specific domain.
+
+    Args:
+        dimensions: Optional list of dimension names to keep.
+        units: Optional list of unit names to keep.
+
+    Returns:
+        dict with restriction summary.
+    """
+    system = active_system()
+
+    dim_objs = None
+    if dimensions is not None:
+        dim_objs = []
+        for d_name in dimensions:
+            dim = system.dimensions.get(d_name)
+            if dim is None:
+                return {"error": f"Unknown dimension: {d_name!r}"}
+            dim_objs.append(dim)
+
+    restricted = system.restrict(dimensions=dim_objs, units=units)
+    return {
+        "success": True,
+        "dimensions": sorted(restricted.dimensions.keys()),
+        "unit_count": len(restricted.units),
+        "units_sample": sorted(restricted.units.keys())[:20],
+        "message": (
+            f"Restricted to {len(restricted.dimensions)} dimensions, "
+            f"{len(restricted.units)} units."
+        ),
+    }
+
+
+@mcp.tool()
+@_dispatched_tool("diff_systems")
+def diff_systems(
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Compare the session system against the process-base system.
+
+    Shows units, dimensions, and conversions added, removed, or
+    redefined by session-level mutations.
+
+    Returns:
+        dict with diff summary showing added/removed/redefined counts.
+    """
+    session = _get_session(ctx)
+    session_system = session.get_unit_system()
+    base_system = active_system()
+
+    diff = base_system.diff(session_system)
+
+    def _summarize_registry_diff(rd):
+        return {
+            "added": len(rd.added),
+            "removed": len(rd.removed),
+            "redefined": len(rd.redefined),
+        }
+
+    return {
+        "success": True,
+        "units": _summarize_registry_diff(diff.units),
+        "dimensions": _summarize_registry_diff(diff.dimensions),
+        "conversions": {
+            "added": len(diff.conversions.added),
+            "removed": len(diff.conversions.removed),
+        },
+        "constants": _summarize_registry_diff(diff.constants),
+    }
+
+
+@mcp.tool()
+@_dispatched_tool("check_compatibility")
+def check_compatibility(
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Check if the session system composes with the process-base without conflict.
+
+    Returns compatibility status and, when incompatible, a summary of
+    conflicting registrations.
+
+    Returns:
+        dict with compatibility status.
+    """
+    session = _get_session(ctx)
+    session_system = session.get_unit_system()
+    base_system = active_system()
+
+    compatible = base_system.compatible_with(session_system)
+    result: dict = {
+        "compatible": compatible,
+    }
+    if not compatible:
+        diff = base_system.diff(session_system)
+        conflicts: list[str] = []
+        if diff.units.redefined:
+            conflicts.append(
+                f"{len(diff.units.redefined)} redefined units: "
+                f"{', '.join(sorted(diff.units.redefined.keys())[:5])}"
+            )
+        if diff.dimensions.redefined:
+            conflicts.append(
+                f"{len(diff.dimensions.redefined)} redefined dimensions: "
+                f"{', '.join(sorted(diff.dimensions.redefined.keys())[:5])}"
+            )
+        result["conflicts"] = conflicts
+    return result
+
+
+# -----------------------------------------------------------------------------
 # Decompose Tool
 # -----------------------------------------------------------------------------
 

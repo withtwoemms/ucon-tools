@@ -92,6 +92,7 @@ _CORE_TOOLS: frozenset[str] = frozenset({
     "list_extended_bases",
     "list_formulas",
     "call_formula",
+    "restrict_system",
 })
 
 
@@ -114,4 +115,26 @@ CORE_BUNDLE: CapabilityBundle = CapabilityBundle(
 )
 
 
-DEFAULT_CATALOG: BundleCatalog = StaticCatalog({(CORE_BUNDLE.name, CORE_BUNDLE.version): CORE_BUNDLE})
+_PRO_TOOLS: frozenset[str] = frozenset({
+    "diff_systems",
+    "check_compatibility",
+})
+
+
+PRO_BUNDLE: CapabilityBundle = CapabilityBundle(
+    name="pro",
+    version="1.0",
+    provenance="ucon-tools built-in",
+    unit_packages=(),
+    constants={},
+    tools=_PRO_TOOLS,
+    formula_tools=frozenset(),
+    kind_formulas=(),
+    expires_at=None,
+)
+
+
+DEFAULT_CATALOG: BundleCatalog = StaticCatalog({
+    (CORE_BUNDLE.name, CORE_BUNDLE.version): CORE_BUNDLE,
+    (PRO_BUNDLE.name, PRO_BUNDLE.version): PRO_BUNDLE,
+})
