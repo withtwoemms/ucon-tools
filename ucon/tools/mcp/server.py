@@ -21,7 +21,10 @@ from ucon.dimension import all_dimensions
 from ucon.core import Number, Scale, Unit, UnitProduct
 from ucon import parse_unit, parse_dimension
 from ucon.basis.transforms import BasisTransform
+from ucon import KindMismatch
+from ucon.formulas.exceptions import FormulaNotFound
 from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_conversion_graph
+from ucon.kinds import JoinRefused
 from ucon.system import UnitSystem, use as use_system, active_system
 from ucon.maps import LinearMap
 from ucon.tools.mcp.formulas import list_formulas as _list_formulas, get_formula
@@ -44,6 +47,9 @@ from ucon.tools.mcp.suggestions import (
     build_dimension_mismatch_error,
     build_no_path_error,
     build_unknown_dimension_error,
+    build_kind_mismatch_error,
+    build_formula_not_found_error,
+    build_join_refused_error,
 )
 from ucon.tools.mcp.system import (
     CallerIdentity,
@@ -697,6 +703,12 @@ def convert(
                 return build_dimension_mismatch_error(from_unit, to_unit, src, dst)
             except ConversionNotFound as e:
                 return build_no_path_error(from_unit, to_unit, src, dst, e)
+            except KindMismatch as e:
+                return build_kind_mismatch_error(e)
+            except FormulaNotFound as e:
+                return build_formula_not_found_error(e)
+            except JoinRefused as e:
+                return build_join_refused_error(e)
 
     # Use the target unit string as output (what the user asked for).
     # This handles cases like mg/kg → µg/kg where internal representation
@@ -3081,6 +3093,32 @@ def call_formula(
             error_type="invalid_parameter",
             formula=name,
             hints=["Check parameter types match formula signature"],
+        )
+    except KindMismatch as e:
+        return FormulaError(
+            error=str(e),
+            error_type="kind_mismatch",
+            formula=name,
+            hints=[
+                f"The {e.unkinded_side} operand has no kind annotation.",
+                f"The other operand is annotated as kind {e.kinded.name!r}.",
+            ],
+        )
+    except FormulaNotFound as e:
+        return FormulaError(
+            error=str(e),
+            error_type="formula_not_found",
+            formula=name,
+            hints=["No KindFormula matches the input kind combination."],
+        )
+    except JoinRefused as e:
+        return FormulaError(
+            error=str(e),
+            error_type="join_refused",
+            formula=name,
+            hints=[
+                f"Kinds {e.left.name!r} and {e.right.name!r} cannot be combined.",
+            ],
         )
     except Exception as e:
         return FormulaError(
