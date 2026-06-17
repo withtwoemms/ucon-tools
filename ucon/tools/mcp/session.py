@@ -135,8 +135,8 @@ class DefaultSessionState:
             base_graph = get_default_graph()
         self._base_graph: "ConversionGraph" = base_graph
         if base_lattice is None:
-            from ucon.kinds import KindLattice
-            base_lattice = KindLattice()
+            from ucon.system import active_kinds
+            base_lattice = active_kinds()
         self._base_lattice: "KindLattice" = base_lattice
         self._graph: "ConversionGraph | None" = None
         self._kind_lattice: "KindLattice | None" = None
