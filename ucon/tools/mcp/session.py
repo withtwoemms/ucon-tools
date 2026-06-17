@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from ucon.constants import Constant
     from ucon.dimension import Dimension
+    from ucon.formulas import FormulaRegistry
     from ucon.graph import ConversionGraph
     from ucon.kinds import KindLattice
     from ucon.system import UnitSystem
@@ -68,6 +69,15 @@ class SessionState(Protocol):
         kinds registered via ``define_quantity_kind``. The lattice is
         copied from the base on first access to avoid cross-session
         contamination.
+        """
+        ...
+
+    def get_formula_registry(self) -> "FormulaRegistry":
+        """Get the session's FormulaRegistry (shared until mutated).
+
+        Returns the session's formula registry, seeded from the boot-time
+        active registry. The registry is shared by reference with the
+        base until a session-level mutation copies it.
         """
         ...
 
@@ -125,6 +135,7 @@ class DefaultSessionState:
         self,
         base_graph: "ConversionGraph | None" = None,
         base_lattice: "KindLattice | None" = None,
+        base_registry: "FormulaRegistry | None" = None,
     ):
         # Capture the default graph eagerly so subsequent `reset()` calls
         # restore to the same base regardless of any active ambient
@@ -138,8 +149,13 @@ class DefaultSessionState:
             from ucon.system import active_kinds
             base_lattice = active_kinds()
         self._base_lattice: "KindLattice" = base_lattice
+        if base_registry is None:
+            from ucon.system import active_formulas
+            base_registry = active_formulas()
+        self._base_registry: "FormulaRegistry" = base_registry
         self._graph: "ConversionGraph | None" = None
         self._kind_lattice: "KindLattice | None" = None
+        self._formula_registry: "FormulaRegistry | None" = None
         self._constants: dict[str, "Constant"] = {}
         self._quantity_kinds: dict[str, "QuantityKindInfo"] = {}
         self._active_computation: "ComputationDeclaration | None" = None
@@ -213,6 +229,17 @@ class DefaultSessionState:
             self._kind_lattice = self._base_lattice.copy()
         return self._kind_lattice
 
+    def get_formula_registry(self) -> "FormulaRegistry":
+        """Get the session's FormulaRegistry (shared until mutated).
+
+        Returns the base registry by reference. The registry is
+        append-only; session-level formula registration (if added in a
+        future release) should copy the base before mutating.
+        """
+        if self._formula_registry is None:
+            self._formula_registry = self._base_registry
+        return self._formula_registry
+
     def get_quantity_kinds(self) -> dict[str, "QuantityKindInfo"]:
         """Get the session's custom quantity kinds dictionary."""
         return self._quantity_kinds
@@ -266,6 +293,7 @@ class DefaultSessionState:
         """
         self._graph = self._base_graph.copy()
         self._kind_lattice = None
+        self._formula_registry = None
         self._constants = {}
         self._quantity_kinds = {}
         self._active_computation = None
