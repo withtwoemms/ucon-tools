@@ -3480,25 +3480,28 @@ def define_quantity_kind(
     aliases = aliases or []
     disambiguation_hints = disambiguation_hints or []
 
-    # Check for duplicate name in built-in kinds
-    existing = get_quantity_kind(name)
-    if existing is not None:
-        return KOQError(
-            error=f"Quantity kind '{name}' is already defined as '{existing.description}'",
-            error_type="duplicate_kind",
-            parameter="name",
-            hints=["Use a different name or use the built-in kind"],
-        )
-
-    # Check for duplicate in session kinds
+    # Check for duplicate in session kinds (QuantityKindInfo registry)
     session_kinds = session.get_quantity_kinds()
-    if name in session_kinds:
+    existing = get_quantity_kind(name, session_kinds=session_kinds)
+    if existing is not None:
         return KOQError(
             error=f"Quantity kind '{name}' is already defined in this session",
             error_type="duplicate_kind",
             parameter="name",
             hints=["Use reset_session() to clear session kinds"],
         )
+
+    # Check if the kind already exists in the lattice (built-in kinds).
+    # If so, we still register the QuantityKindInfo wrapper in the session
+    # dict (needed by declare_computation / validate_result) but skip the
+    # lattice.register() call.
+    lattice = session.get_kind_lattice()
+    builtin_kind_exists = False
+    try:
+        lattice.get(name)
+        builtin_kind_exists = True
+    except Exception:
+        pass  # KindNotFound — name is not a built-in
 
     # Parse dimension to vector notation (session-aware so extended-basis
     # dimensions are accepted).
@@ -3527,18 +3530,22 @@ def define_quantity_kind(
     )
     session.register_quantity_kind(kind_info)
 
-    # Also register a real Kind on the session's KindLattice so that
+    # Register a real Kind on the session's KindLattice so that
     # ucon's ActiveContext.kinds sees it during the `use()` window.
-    dim_obj = _parse_dimension_object(dimension, session=session)
-    if dim_obj is not None:
-        from ucon.kinds import Kind
-        lattice_kind = Kind(
-            name=name,
-            dimension=dim_obj,
-            aliases=tuple(aliases),
-        )
-        lattice = session.get_kind_lattice()
-        lattice.register(lattice_kind)
+    # Skip if the kind is already a built-in (already in the lattice).
+    if not builtin_kind_exists:
+        dim_obj = _parse_dimension_object(dimension, session=session)
+        if dim_obj is not None:
+            from ucon.kinds import Kind, NameCollision
+            lattice_kind = Kind(
+                name=name,
+                dimension=dim_obj,
+                aliases=tuple(aliases),
+            )
+            try:
+                lattice.register(lattice_kind)
+            except NameCollision:
+                pass  # Defensive guard
 
     return QuantityKindDefinitionResult(
         success=True,
