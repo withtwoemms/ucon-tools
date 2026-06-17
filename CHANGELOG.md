@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-16
+
+Closes remaining gaps from the ucon v2.0 full-adoption plan and adopts
+ucon v2.1.x capabilities (kind-threaded arithmetic, `FormulaRegistry`
+preservation in `Graph.copy()`).
+
+### Fixed
+
+- **Empty-lattice bug in `DefaultSessionState`.** The base lattice was
+  initialized as `KindLattice()` (empty) when no `base_lattice` argument
+  was supplied. The 26 built-in kinds from `comprehensive.ucon.toml` were
+  invisible to session operations. Now defaults to `active_kinds()`.
+- **`define_quantity_kind` now handles built-in kind names gracefully.**
+  Registering a kind whose name already exists in the built-in lattice
+  (e.g. `gibbs_energy`) now succeeds by registering the
+  `QuantityKindInfo` wrapper in the session dict without re-adding to the
+  lattice.  Previously this raised an uncaught `NameCollision`.
+- **`define_quantity_kind` duplicate check was dead code.** The
+  `get_quantity_kind(name)` call omitted the `session_kinds` argument, so
+  the built-in check always returned `None`. Now passes the session dict.
+
+### Added
+
+- **`FormulaRegistry` wired into session state.** `DefaultSessionState`
+  now carries a `_base_registry` / `_formula_registry` pair with the same
+  copy-on-first-access pattern as `KindLattice`. The `SessionState`
+  protocol gains `get_formula_registry()`.
+- **`formulas=` passed to `use_system()` in `dispatched()`.** The
+  session's formula registry is now active during tool execution, enabling
+  kind-threaded arithmetic to find `KindFormula` entries.
+- **Structured error handling for v2.1.0 kind-arithmetic exceptions.**
+  `KindMismatch`, `FormulaNotFound`, and `JoinRefused` are now caught in
+  `convert()` and `call_formula()`, producing structured `ConversionError`
+  / `FormulaError` responses with `error_type` and actionable hints.
+
+### Changed
+
+- **Dependency floor raised to `ucon>=2.1.1`.** Required for
+  kind-threaded `Number` arithmetic, `FormulaNotFound` / `KindMismatch`
+  exceptions, `Graph.copy()` formula-registry preservation, and the
+  division-warning verb fix.
+- **`using_conversion_graph` removed from `check_dimensions()`.** The
+  ambient graph is now pinned by `@_dispatched_tool` via `use_system()`;
+  the explicit `using_conversion_graph(graph)` call was redundant.
+  Remaining `using_conversion_graph` usage is limited to inline-graph
+  overrides for `custom_units` / `custom_edges` parameters.
+
 ## [0.6.0] - 2026-06-15
 
 Compatibility work spanning ucon v2.0.0a1 through v2.0.0a3.
