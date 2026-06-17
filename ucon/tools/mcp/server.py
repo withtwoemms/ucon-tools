@@ -253,6 +253,12 @@ def dispatched(
     Yields the `EffectiveCapabilities` so the tool body can read
     ``eff.audit`` (and ``eff.unit_system`` / ``eff.unit_system.conversion_graph``).
 
+    Tools that accept ``custom_units`` / ``custom_edges`` parameters build
+    an inline graph and re-enter ``using_conversion_graph(inline_graph)``
+    inside their body. That is the **only** remaining use of
+    ``using_conversion_graph``; ``dispatched()`` itself relies solely on
+    ``use_system()`` for ambient activation.
+
     Raises
     ------
     CapabilityNotAvailable
@@ -263,7 +269,12 @@ def dispatched(
     session = _get_session(ctx)
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
-    with use_system(eff.unit_system, kinds=session.get_kind_lattice(), strict=eff.strict):
+    with use_system(
+        eff.unit_system,
+        kinds=session.get_kind_lattice(),
+        formulas=session.get_formula_registry(),
+        strict=eff.strict,
+    ):
         yield eff
 
 
