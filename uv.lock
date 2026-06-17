@@ -1108,14 +1108,14 @@ wheels = [
 
 [[package]]
 name = "ucon"
-version = "2.0.0"
+version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c7/78/0664747593e1d2dda87492721262ff0067ef8da3a46eaac83d8be1cc1443/ucon-2.0.0.tar.gz", hash = "sha256:dfe7310e0c791e18fc5296fb8aaec6d43c454bd9ad62f86c571c53a46bbee13a", size = 444430, upload-time = "2026-06-07T20:58:51.035Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/01/d3384823de73f4432f12e61fc909e2f18f1acbe3162b372b52d45248132f/ucon-2.1.1.tar.gz", hash = "sha256:65598c4e2eed5ca45f6ac3fe52de481e6a3f052a2df41f8dd84f777fdec184c3", size = 446630, upload-time = "2026-06-16T17:55:44.785Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/53/1b5fc660838612436574a568c75536e5f0990c52c6fb93c2dc957896b19a/ucon-2.0.0-py3-none-any.whl", hash = "sha256:3f4394e41f45c976de8d46105ef2b0932b4755ad69d51b81d57d243a6f0cf88b", size = 219050, upload-time = "2026-06-07T20:58:49.719Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/80/83fe05e95c84c9657f954191b21a3e65bec97e73fb891bdb97b3bd5c4e60/ucon-2.1.1-py3-none-any.whl", hash = "sha256:f1403f3fcdcf2fdabef5716410d38c2ff646b3c3609fb9068255ec70818c74d1", size = 221008, upload-time = "2026-06-16T17:55:43.065Z" },
 ]
 
 [[package]]
@@ -1150,7 +1150,7 @@ requires-dist = [
     { name = "ollama", marker = "extra == 'benchmark'", specifier = ">=0.4.0" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
-    { name = "ucon", specifier = ">=2.0.0" },
+    { name = "ucon", specifier = ">=2.1.1" },
     { name = "ucon-tools", extras = ["mcp"], marker = "extra == 'benchmark'" },
 ]
 provides-extras = ["test", "pydantic", "mcp", "benchmark"]
