@@ -614,6 +614,63 @@ def build_unknown_dimension_error(
     )
 
 
+def build_kind_mismatch_error(exc) -> ConversionError:
+    """Build a ConversionError for kinded/unkinded arithmetic under strict mode.
+
+    Parameters
+    ----------
+    exc : KindMismatch
+        The exception carrying ``kinded`` (Kind) and ``unkinded_side`` (str).
+    """
+    return ConversionError(
+        error=str(exc),
+        error_type="kind_mismatch",
+        got=exc.kinded.name,
+        hints=[
+            f"The {exc.unkinded_side} operand has no kind annotation.",
+            f"The other operand is annotated as kind {exc.kinded.name!r}.",
+            "Annotate both operands with compatible kinds, or use strict=False.",
+        ],
+    )
+
+
+def build_formula_not_found_error(exc) -> ConversionError:
+    """Build a ConversionError for missing formula under strict mode.
+
+    Parameters
+    ----------
+    exc : FormulaNotFound
+        The exception from FormulaRegistry.resolve().
+    """
+    return ConversionError(
+        error=str(exc),
+        error_type="formula_not_found",
+        hints=[
+            "No formula matches the input kind combination.",
+            "Define a KindFormula for this combination, or use strict=False.",
+        ],
+    )
+
+
+def build_join_refused_error(exc) -> ConversionError:
+    """Build a ConversionError for incompatible kind addition.
+
+    Parameters
+    ----------
+    exc : JoinRefused
+        The exception carrying ``left``, ``right``, and ``parent`` kinds.
+    """
+    return ConversionError(
+        error=str(exc),
+        error_type="join_refused",
+        hints=[
+            f"Kinds {exc.left.name!r} and {exc.right.name!r} share dimension "
+            f"but are physically distinct (parent {exc.parent.name!r} forbids join).",
+            "These quantity kinds cannot be meaningfully added.",
+        ],
+    )
+
+
 __all__ = [
     "ConversionError",
     "resolve_unit",
@@ -623,4 +680,7 @@ __all__ = [
     "build_no_path_error",
     "build_parse_error",
     "build_unknown_dimension_error",
+    "build_kind_mismatch_error",
+    "build_formula_not_found_error",
+    "build_join_refused_error",
 ]

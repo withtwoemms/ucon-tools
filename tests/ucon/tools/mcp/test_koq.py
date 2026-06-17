@@ -114,6 +114,39 @@ class TestDefineQuantityKind(unittest.TestCase):
         self.assertIsInstance(result, self.KOQError)
         self.assertEqual(result.error_type, "invalid_dimension")
 
+    def test_builtin_kind_registers_session_wrapper(self):
+        """v0.7.0: define_quantity_kind with built-in kind name succeeds.
+
+        When the lattice already contains a built-in kind (e.g. 'gibbs_energy'),
+        define_quantity_kind should register the QuantityKindInfo wrapper in the
+        session dict without raising a collision error.
+        """
+        result = self.define_quantity_kind(
+            name="gibbs_energy",
+            dimension="energy/amount_of_substance",
+            description="Gibbs free energy",
+        )
+        self.assertIsInstance(result, self.QuantityKindDefinitionResult)
+        self.assertTrue(result.success)
+        self.assertEqual(result.name, "gibbs_energy")
+
+    def test_builtin_kind_duplicate_session_rejected(self):
+        """v0.7.0: re-defining a built-in kind within the same session is rejected."""
+        # First call succeeds (registers wrapper)
+        self.define_quantity_kind(
+            name="enthalpy",
+            dimension="energy/amount_of_substance",
+            description="Enthalpy",
+        )
+        # Second call fails (already in session dict)
+        result = self.define_quantity_kind(
+            name="enthalpy",
+            dimension="energy/amount_of_substance",
+            description="Enthalpy again",
+        )
+        self.assertIsInstance(result, self.KOQError)
+        self.assertEqual(result.error_type, "duplicate_kind")
+
 
 class TestDeclareComputation(unittest.TestCase):
     """Test the declare_computation tool."""

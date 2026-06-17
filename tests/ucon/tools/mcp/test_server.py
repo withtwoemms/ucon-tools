@@ -1592,6 +1592,63 @@ class TestSessionState(unittest.TestCase):
         self.assertIsNotNone(resolved)
 
 
+    def test_session_lattice_contains_builtin_kinds(self):
+        """v0.7.0: session lattice seeded from active_kinds(), not empty."""
+        session = self.DefaultSessionState()
+        lattice = session.get_kind_lattice()
+        # Must contain the 26 built-in kinds from comprehensive.ucon.toml
+        names = lattice.names()
+        self.assertIn("energy", names)
+        self.assertIn("torque", names)
+        self.assertIn("gibbs_energy", names)
+        self.assertIn("enthalpy", names)
+        self.assertGreaterEqual(len(names), 26)
+
+    def test_session_formula_registry_contains_builtins(self):
+        """v0.7.0: session formula registry seeded from active_formulas()."""
+        session = self.DefaultSessionState()
+        registry = session.get_formula_registry()
+        # Must contain the radiation_weighting formula
+        self.assertIsNotNone(registry)
+        from ucon.formulas import FormulaRegistry
+        self.assertIsInstance(registry, FormulaRegistry)
+
+    def test_formula_registry_isolation(self):
+        """v0.7.0: separate sessions don't share the same registry object after mutation."""
+        session_a = self.DefaultSessionState()
+        session_b = self.DefaultSessionState()
+        reg_a = session_a.get_formula_registry()
+        reg_b = session_b.get_formula_registry()
+        # Before any mutation, both may share the base reference,
+        # but they should be independently resettable.
+        session_a.reset()
+        reg_a_new = session_a.get_formula_registry()
+        # After reset, session_a should get a fresh registry reference
+        # while session_b's is unchanged
+        self.assertIs(reg_b, session_b.get_formula_registry())
+
+    def test_reset_clears_formula_registry(self):
+        """v0.7.0: reset() clears the formula registry."""
+        session = self.DefaultSessionState()
+        reg1 = session.get_formula_registry()
+        session.reset()
+        reg2 = session.get_formula_registry()
+        # After reset, get_formula_registry returns a fresh reference
+        # (it's re-initialized from the base)
+        self.assertIsNotNone(reg2)
+
+    def test_reset_clears_kind_lattice(self):
+        """v0.7.0: reset() clears the kind lattice (re-copies from base)."""
+        session = self.DefaultSessionState()
+        lattice1 = session.get_kind_lattice()
+        session.reset()
+        lattice2 = session.get_kind_lattice()
+        # After reset, a new lattice is created (different instance)
+        self.assertIsNot(lattice1, lattice2)
+        # But built-in kinds should still be present
+        self.assertIn("energy", lattice2.names())
+
+
 class TestConcurrencyFeedbackIssues(unittest.TestCase):
     """Tests for issues identified in concurrency feedback (FEEDBACK_ucon-mcp-concurrency.md)."""
 

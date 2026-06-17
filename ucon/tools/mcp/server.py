@@ -21,7 +21,10 @@ from ucon.dimension import all_dimensions
 from ucon.core import Number, Scale, Unit, UnitProduct
 from ucon import parse_unit, parse_dimension
 from ucon.basis.transforms import BasisTransform
-from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_conversion_graph
+from ucon import KindMismatch
+from ucon.formulas.exceptions import FormulaNotFound
+from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_conversion_graph  # noqa: F401 – using_conversion_graph used only for inline-graph overrides (custom_units/custom_edges)
+from ucon.kinds import JoinRefused
 from ucon.system import UnitSystem, use as use_system, active_system
 from ucon.maps import LinearMap
 from ucon.tools.mcp.formulas import list_formulas as _list_formulas, get_formula
@@ -44,6 +47,9 @@ from ucon.tools.mcp.suggestions import (
     build_dimension_mismatch_error,
     build_no_path_error,
     build_unknown_dimension_error,
+    build_kind_mismatch_error,
+    build_formula_not_found_error,
+    build_join_refused_error,
 )
 from ucon.tools.mcp.system import (
     CallerIdentity,
@@ -253,6 +259,12 @@ def dispatched(
     Yields the `EffectiveCapabilities` so the tool body can read
     ``eff.audit`` (and ``eff.unit_system`` / ``eff.unit_system.conversion_graph``).
 
+    Tools that accept ``custom_units`` / ``custom_edges`` parameters build
+    an inline graph and re-enter ``using_conversion_graph(inline_graph)``
+    inside their body. That is the **only** remaining use of
+    ``using_conversion_graph``; ``dispatched()`` itself relies solely on
+    ``use_system()`` for ambient activation.
+
     Raises
     ------
     CapabilityNotAvailable
@@ -263,7 +275,12 @@ def dispatched(
     session = _get_session(ctx)
     overlay = SessionStateOverlay(session=session)
     eff = dispatcher.prepare(tool_name, session_overlay=overlay)
-    with use_system(eff.unit_system, kinds=session.get_kind_lattice(), strict=eff.strict):
+    with use_system(
+        eff.unit_system,
+        kinds=session.get_kind_lattice(),
+        formulas=session.get_formula_registry(),
+        strict=eff.strict,
+    ):
         yield eff
 
 
@@ -686,6 +703,12 @@ def convert(
                 return build_dimension_mismatch_error(from_unit, to_unit, src, dst)
             except ConversionNotFound as e:
                 return build_no_path_error(from_unit, to_unit, src, dst, e)
+            except KindMismatch as e:
+                return build_kind_mismatch_error(e)
+            except FormulaNotFound as e:
+                return build_formula_not_found_error(e)
+            except JoinRefused as e:
+                return build_join_refused_error(e)
 
     # Use the target unit string as output (what the user asked for).
     # This handles cases like mg/kg → µg/kg where internal representation
@@ -841,18 +864,15 @@ def check_dimensions(
         DimensionCheck indicating compatibility and the dimension of each unit.
         ConversionError if a unit string cannot be parsed.
     """
-    session = _get_session(ctx)
-    graph = session.get_graph()
+    # Unit resolution uses the ambient graph pinned by @_dispatched_tool
+    # (via use_system()); no inline-graph override needed here.
+    a, err = resolve_unit(unit_a, parameter="unit_a")
+    if err:
+        return err
 
-    # Resolve units within session graph context
-    with using_conversion_graph(graph):
-        a, err = resolve_unit(unit_a, parameter="unit_a")
-        if err:
-            return err
-
-        b, err = resolve_unit(unit_b, parameter="unit_b")
-        if err:
-            return err
+    b, err = resolve_unit(unit_b, parameter="unit_b")
+    if err:
+        return err
 
     dim_a = a.dimension if isinstance(a, Unit) else a.dimension
     dim_b = b.dimension if isinstance(b, Unit) else b.dimension
@@ -3071,6 +3091,32 @@ def call_formula(
             formula=name,
             hints=["Check parameter types match formula signature"],
         )
+    except KindMismatch as e:
+        return FormulaError(
+            error=str(e),
+            error_type="kind_mismatch",
+            formula=name,
+            hints=[
+                f"The {e.unkinded_side} operand has no kind annotation.",
+                f"The other operand is annotated as kind {e.kinded.name!r}.",
+            ],
+        )
+    except FormulaNotFound as e:
+        return FormulaError(
+            error=str(e),
+            error_type="formula_not_found",
+            formula=name,
+            hints=["No KindFormula matches the input kind combination."],
+        )
+    except JoinRefused as e:
+        return FormulaError(
+            error=str(e),
+            error_type="join_refused",
+            formula=name,
+            hints=[
+                f"Kinds {e.left.name!r} and {e.right.name!r} cannot be combined.",
+            ],
+        )
     except Exception as e:
         return FormulaError(
             error=f"Formula execution failed: {e}",
@@ -3434,25 +3480,28 @@ def define_quantity_kind(
     aliases = aliases or []
     disambiguation_hints = disambiguation_hints or []
 
-    # Check for duplicate name in built-in kinds
-    existing = get_quantity_kind(name)
-    if existing is not None:
-        return KOQError(
-            error=f"Quantity kind '{name}' is already defined as '{existing.description}'",
-            error_type="duplicate_kind",
-            parameter="name",
-            hints=["Use a different name or use the built-in kind"],
-        )
-
-    # Check for duplicate in session kinds
+    # Check for duplicate in session kinds (QuantityKindInfo registry)
     session_kinds = session.get_quantity_kinds()
-    if name in session_kinds:
+    existing = get_quantity_kind(name, session_kinds=session_kinds)
+    if existing is not None:
         return KOQError(
             error=f"Quantity kind '{name}' is already defined in this session",
             error_type="duplicate_kind",
             parameter="name",
             hints=["Use reset_session() to clear session kinds"],
         )
+
+    # Check if the kind already exists in the lattice (built-in kinds).
+    # If so, we still register the QuantityKindInfo wrapper in the session
+    # dict (needed by declare_computation / validate_result) but skip the
+    # lattice.register() call.
+    lattice = session.get_kind_lattice()
+    builtin_kind_exists = False
+    try:
+        lattice.get(name)
+        builtin_kind_exists = True
+    except Exception:
+        pass  # KindNotFound — name is not a built-in
 
     # Parse dimension to vector notation (session-aware so extended-basis
     # dimensions are accepted).
@@ -3481,18 +3530,22 @@ def define_quantity_kind(
     )
     session.register_quantity_kind(kind_info)
 
-    # Also register a real Kind on the session's KindLattice so that
+    # Register a real Kind on the session's KindLattice so that
     # ucon's ActiveContext.kinds sees it during the `use()` window.
-    dim_obj = _parse_dimension_object(dimension, session=session)
-    if dim_obj is not None:
-        from ucon.kinds import Kind
-        lattice_kind = Kind(
-            name=name,
-            dimension=dim_obj,
-            aliases=tuple(aliases),
-        )
-        lattice = session.get_kind_lattice()
-        lattice.register(lattice_kind)
+    # Skip if the kind is already a built-in (already in the lattice).
+    if not builtin_kind_exists:
+        dim_obj = _parse_dimension_object(dimension, session=session)
+        if dim_obj is not None:
+            from ucon.kinds import Kind, NameCollision
+            lattice_kind = Kind(
+                name=name,
+                dimension=dim_obj,
+                aliases=tuple(aliases),
+            )
+            try:
+                lattice.register(lattice_kind)
+            except NameCollision:
+                pass  # Defensive guard
 
     return QuantityKindDefinitionResult(
         success=True,
