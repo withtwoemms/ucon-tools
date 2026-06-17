@@ -23,7 +23,7 @@ from ucon import parse_unit, parse_dimension
 from ucon.basis.transforms import BasisTransform
 from ucon import KindMismatch
 from ucon.formulas.exceptions import FormulaNotFound
-from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_conversion_graph
+from ucon.graph import ConversionGraph, DimensionMismatch, ConversionNotFound, using_conversion_graph  # noqa: F401 – using_conversion_graph used only for inline-graph overrides (custom_units/custom_edges)
 from ucon.kinds import JoinRefused
 from ucon.system import UnitSystem, use as use_system, active_system
 from ucon.maps import LinearMap
@@ -864,18 +864,15 @@ def check_dimensions(
         DimensionCheck indicating compatibility and the dimension of each unit.
         ConversionError if a unit string cannot be parsed.
     """
-    session = _get_session(ctx)
-    graph = session.get_graph()
+    # Unit resolution uses the ambient graph pinned by @_dispatched_tool
+    # (via use_system()); no inline-graph override needed here.
+    a, err = resolve_unit(unit_a, parameter="unit_a")
+    if err:
+        return err
 
-    # Resolve units within session graph context
-    with using_conversion_graph(graph):
-        a, err = resolve_unit(unit_a, parameter="unit_a")
-        if err:
-            return err
-
-        b, err = resolve_unit(unit_b, parameter="unit_b")
-        if err:
-            return err
+    b, err = resolve_unit(unit_b, parameter="unit_b")
+    if err:
+        return err
 
     dim_a = a.dimension if isinstance(a, Unit) else a.dimension
     dim_b = b.dimension if isinstance(b, Unit) else b.dimension
